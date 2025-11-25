@@ -1,0 +1,7 @@
+{
+	"files.associations": {
+		"*.cu": "c",
+		"*.cuh": "c",
+		"cstdint": "c"
+	}
+}
