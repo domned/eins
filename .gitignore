@@ -1,0 +1,19 @@
+# Ignore everything by default
+*
+
+# Allow Git to see directories so we can un-ignore .c files inside them
+!*/
+
+# Track only C source files and this .gitignore
+!*.c
+!.gitignore
+
+# Explicitly ignore common editor and build artifacts (redundant with `*` but explicit for clarity)
+.vscode/
+*.o
+*.out
+a.out
+einsum
+/bin/
+/build/
+*.exe
