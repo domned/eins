@@ -2,16 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-
-typedef uint32_t IndexBitmap;  // 26 bits used for 'a'..'z'
-
-// Simple (N-dimensional) matrix representation
-typedef struct {
-    double *data;       // contiguous data buffer
-    int ndim;           // number of dimensions
-    int *shape;         // length ndim
-    IndexBitmap indices;
-} Matrix;
+#include "einsum.h"
 
 // Convert literal like "ij" to bitmap (only lowercase a..z)
 IndexBitmap literal_to_bitmap(const char *lit) {
@@ -362,6 +353,7 @@ Matrix* einsum(const char *notation, const Matrix *A, const Matrix *B){
 
 
 
+#ifndef EINSUM_NO_MAIN
 int main(void) {
     const char *notation = "ij,jc->ic";
     char in1[32], in2[32], out[32];
@@ -434,6 +426,7 @@ int main(void) {
     matrix_free(B);
     return 0;
 }
+#endif // EINSUM_NO_MAIN
 
 
 
