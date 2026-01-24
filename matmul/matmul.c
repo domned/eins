@@ -8,7 +8,7 @@
 Matrix* matrix_permute(const Matrix *src, const int *order) {
     if (!src || !order) return NULL;
     
-    // 1. Create the new shape
+    // Create the new shape
     int *new_shape = (int*)malloc(sizeof(int) * src->ndim);
     for (int i = 0; i < src->ndim; i++) {
         new_shape[i] = src->shape[order[i]];
@@ -20,8 +20,8 @@ Matrix* matrix_permute(const Matrix *src, const int *order) {
     Matrix *dst = matrix_create_nd(src->ndim, new_shape, "per");
     free(new_shape);
 
-    // 2. Copy data to new layout
-    // We iterate through the DESTINATION linearly to keep writes contiguous (cache friendly),
+    // Copy data to new layout
+    // We iterate through the DESTINATION linearly to keep writes contiguous,
     // and calculate the SOURCE index for each read.
     size_t total_elements = 1;
     for (int i = 0; i < src->ndim; i++) total_elements *= src->shape[i];
@@ -57,7 +57,7 @@ Matrix* einsum_matmul(const char *notation, const Matrix *A, const Matrix *B) {
     char in1[32], in2[32], out[32];
     parse_einsum_notation(notation, in1, in2, out); //
 
-    // --- STEP 1: ANALYZE INDICES ---
+    // --- ANALYZE INDICES ---
     // Identify Free indices (Keep) vs Summation indices (Contract)
     IndexBitmap bm1 = literal_to_bitmap(in1);
     IndexBitmap bm2 = literal_to_bitmap(in2);
@@ -74,13 +74,13 @@ Matrix* einsum_matmul(const char *notation, const Matrix *A, const Matrix *B) {
     // Build Permutation for A: [Free indices..., Summation indices...]
     // This groups all free dims to the left, and sum dims to the right.
     int pA_idx = 0;
-    // 1a. Add A's free indices
+    // Add A's free indices
     for (int i = 0; i < A->ndim; i++) {
         char c = in1[i];
         if (bmOut & (1u << (c-'a'))) permA[pA_idx++] = i;
     }
     countA_free = pA_idx;
-    // 1b. Add A's summation indices
+    // Add A's summation indices
     for (int i = 0; i < A->ndim; i++) {
         char c = in1[i];
         if (bmSum & (1u << (c-'a'))) permA[pA_idx++] = i;
@@ -90,7 +90,7 @@ Matrix* einsum_matmul(const char *notation, const Matrix *A, const Matrix *B) {
     // Build Permutation for B: [Summation indices..., Free indices...]
     // Note order: Sum indices on Left (to align with A's Right columns)
     int pB_idx = 0;
-    // 2a. Add B's summation indices
+    // Add B's summation indices
     // CRITICAL: Must be in same relative order as they appear in A's permuted end
     // To match A's sum group, we must look at how we ordered A's sum group.
     // However, simplest is to just sort alphabetically or order by appearance. 
@@ -104,18 +104,18 @@ Matrix* einsum_matmul(const char *notation, const Matrix *A, const Matrix *B) {
     }
     countB_sum = pB_idx;
     
-    // 2b. Add B's free indices
+    // Add B's free indices
     for (int i = 0; i < B->ndim; i++) {
         char c = in2[i];
         if (bmOut & (1u << (c-'a'))) permB[pB_idx++] = i;
     }
     countB_free = pB_idx - countB_sum;
 
-    // --- STEP 2: PERMUTE TENSORS ---
+    // --- PERMUTE TENSORS ---
     Matrix *permutedA = matrix_permute(A, permA);
     Matrix *permutedB = matrix_permute(B, permB);
 
-    // --- STEP 3: CALCULATE FLATTENED DIMENSIONS ---
+    // --- CALCULATE FLATTENED DIMENSIONS ---
     int rows_A = 1; 
     for(int i=0; i<countA_free; i++) rows_A *= permutedA->shape[i];
     
@@ -133,11 +133,10 @@ Matrix* einsum_matmul(const char *notation, const Matrix *A, const Matrix *B) {
         return NULL;
     }
 
-    // --- STEP 4: MATRIX MULTIPLICATION (rows_A x cols_A_sum) * (rows_B_sum x cols_B) ---
+    // --- MATRIX MULTIPLICATION (rows_A x cols_A_sum) * (rows_B_sum x cols_B) ---
     // C_flat will be (rows_A x cols_B)
     double *C_data = (double*)calloc(rows_A * cols_B, sizeof(double));
-    
-    // Standard GEMM (Naive implementation for demo - Replace with BLAS/OpenBLAS)
+
     for (int i = 0; i < rows_A; i++) {
         for (int k = 0; k < cols_A_sum; k++) {
             double a_val = permutedA->data[i * cols_A_sum + k];
@@ -152,11 +151,11 @@ Matrix* einsum_matmul(const char *notation, const Matrix *A, const Matrix *B) {
     matrix_free(permutedA);
     matrix_free(permutedB);
 
-    // --- STEP 5: RESHAPE/PERMUTE OUTPUT ---
+    // --- RESHAPE/PERMUTE OUTPUT ---
     // Currently C_data is laid out as [A_Free_Dims..., B_Free_Dims...]
     // We need to reshape it to that N-dim shape, then permute it to match 'out' string.
     
-    // 5a. Construct the shape of the intermediate result
+    // Construct the shape of the intermediate result
     int intermediate_ndim = countA_free + countB_free;
     int *intermediate_shape = (int*)malloc(sizeof(int) * intermediate_ndim);
     char intermediate_indices[32]; 
@@ -212,7 +211,7 @@ Matrix* einsum_matmul(const char *notation, const Matrix *A, const Matrix *B) {
         free(intermediate_shape);
     }
 
-    // 5b. Final Permutation to match requested 'out' string
+    // Final Permutation to match requested 'out' string
     // We have C_intermediate with indices e.g. "ij" but user might want "ji".
     int final_perm[16];
     for (int i = 0; out[i]; i++) {
