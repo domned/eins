@@ -161,9 +161,7 @@ void generate_einsum_impl(const char *notation, const Matrix *A, const Matrix *B
     printf("}\n");
 }
 
-// ========================================================
-// Auto-generated implementation for einsum("ij,jc->ic")
-// ========================================================
+
 int main(void) {
     printf("//--- Generating Code ---\n");
 
