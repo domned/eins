@@ -3,5 +3,10 @@
 		"*.cu": "c",
 		"*.cuh": "c",
 		"cstdint": "c"
-	}
+	},
+	"latex-workshop.formatting.latex": "latexindent",
+	"latex-workshop.formatting.latex.args": [
+		"-i",
+		"%file%"
+	]
 }
