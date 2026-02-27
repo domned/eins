@@ -1,3 +1,4 @@
+!tests/
 # Ignore everything by default
 *
 
@@ -7,6 +8,7 @@
 # Track only C source files and this .gitignore
 !*.c
 !.gitignore
+!*.h
 
 # Track thesis directory
 !thesis/

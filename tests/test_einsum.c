@@ -51,14 +51,21 @@ int main(void) {
     // Define multiple test cases (notation, shapes)
     struct TestCase {
         const char *notation;
-        int A_ndim; int A_shape[4];
-        int B_ndim; int B_shape[4];
+        int A_ndim; int A_shape[5];
+        int B_ndim; int B_shape[5];
     } tests[] = {
-        { "ij,jc->ic", 2, {7,3,0,0}, 2, {3,6,0,0} },   // matmul (matches generated impl)
-        { "i,i->",     1, {10,0,0,0}, 1, {10,0,0,0} }, // dot product (vectors length 10)
-        { "i,j->ij",   1, {5,0,0,0},  1, {4,0,0,0} },   // outer product (5 x 4)
-        { "ab,bc->ac", 2, {4,3,0,0},  2, {3,6,0,0} },   // matmul variant
-        { "abc,cd->abd",3, {2,3,3,0}, 2, {3,5,0,0} }    // tensor contraction: A(2,3,3) * B(3,5) -> C(2,3,5)
+        { "ij,jc->ic", 2, {7,3,0,0,0}, 2, {3,6,0,0,0} },   // matmul (matches generated impl)
+        { "i,i->",     1, {10,0,0,0,0}, 1, {10,0,0,0,0} }, // dot product (vectors length 10)
+        { "i,j->ij",   1, {5,0,0,0,0},  1, {4,0,0,0,0} },   // outer product (5 x 4)
+        { "ab,bc->ac", 2, {4,3,0,0,0},  2, {3,6,0,0,0} },   // matmul variant
+        { "abc,cd->abd",3, {2,3,3,0,0}, 2, {3,5,0,0,0} },   // tensor contraction: A(2,3,3) * B(3,5) -> C(2,3,5)
+        
+        // Bigger tensors for stress testing
+        { "ij,jk->ik", 2, {100,50,0,0,0}, 2, {50,80,0,0,0} },   // large matmul: 100×50 @ 50×80 -> 100×80
+        { "i,i->",     1, {1000,0,0,0,0}, 1, {1000,0,0,0,0} },  // large dot: 1000-element vectors
+        { "i,j->ij",   1, {50,0,0,0,0},   1, {100,0,0,0,0} },   // large outer: 50×100
+        { "ab,bc->ac", 2, {64,128,0,0,0}, 2, {128,32,0,0,0} },  // large matmul variant: 64×128 @ 128×32
+        { "abcd,de->abce", 4, {5,4,3,2,0}, 2, {2,6,0,0,0} }    // 4D tensor contraction: (5,4,3,2) @ (2,6) -> (5,4,3,6)
     };
 
     const int ntests = sizeof(tests)/sizeof(tests[0]);
@@ -70,15 +77,15 @@ int main(void) {
         int Br = tests[ti].B_ndim;
         int A_nd = tests[ti].A_ndim;
         int B_nd = tests[ti].B_ndim;
-        int Ashape[4], Bshape[4];
-        for (int i=0;i<4;i++) { Ashape[i] = tests[ti].A_shape[i]; Bshape[i] = tests[ti].B_shape[i]; }
+        int Ashape[5], Bshape[5];
+        for (int i=0;i<5;i++) { Ashape[i] = tests[ti].A_shape[i]; Bshape[i] = tests[ti].B_shape[i]; }
         int Cr = (notation[0] == '\0') ? 1 : Ar; // placeholder, will compute properly below
 
         // compute C dims by parsing output string
         char in1[32], in2[32], out[32];
         parse_einsum_notation(notation, in1, in2, out);
         int out_nd = (int)strlen(out);
-        int shapeC[4] = {1,1,1,1};
+        int shapeC[5] = {1,1,1,1,1};
         // Map letters to sizes
         // Map letters to sizes using the explicit shapes provided
         int sizes[26]; for (int i=0;i<26;i++) sizes[i]=-1;
@@ -126,7 +133,7 @@ int main(void) {
         printf("B shape: ("); for (int d=0; d<B_nd; ++d) printf("%d%s", Bshape[d], d==B_nd-1?"":","); printf(")\n");
 
         // Compute reference depending on notation
-        if (strcmp(notation, "ij,jc->ic") == 0 || strcmp(notation, "ab,bc->ac") == 0) {
+        if (strcmp(notation, "ij,jc->ic") == 0 || strcmp(notation, "ab,bc->ac") == 0 || strcmp(notation, "ij,jk->ik") == 0) {
             // matrix multiply: A (Ar x Ac) * B (Br x Bc) where Ac == Br
             int A_r = Ashape[0], A_c = Ashape[1];
             int B_r = Bshape[0], B_c = Bshape[1];
@@ -149,6 +156,28 @@ int main(void) {
                 for (int k = 0; k < c; ++k) s += A[(i*b + j)*c + k] * B[k*d + kk];
                 C_ref[(i*b + j)*d + kk] = s;
             }
+        } else if (strcmp(notation, "abcd,de->abce") == 0) {
+            // A shape (a,b,c,d), B shape (d,e)
+            // A flattened as A[(((i*b + j)*c + k)*d + l)]
+            // B flattened as B[k*e + l]
+            // C shape (a,b,c,e) flattened as C[(((i*b + j)*c + k)*e + l)]
+            int a = Ashape[0], b = Ashape[1], c = Ashape[2], d = Ashape[3], e = Bshape[1];
+            for (int i = 0; i < a; ++i) {
+                for (int j = 0; j < b; ++j) {
+                    for (int k = 0; k < c; ++k) {
+                        for (int ll = 0; ll < e; ++ll) {
+                            double s = 0.0;
+                            for (int m = 0; m < d; ++m) {
+                                size_t A_idx = (((size_t)i*b + j)*c + k)*d + m;
+                                size_t B_idx = (size_t)m*e + ll;
+                                s += A[A_idx] * B[B_idx];
+                            }
+                            size_t C_idx = (((size_t)i*b + j)*c + k)*e + ll;
+                            C_ref[C_idx] = s;
+                        }
+                    }
+                }
+            }
         } else {
             // unknown notation: skip
             printf("SKIP unknown notation %s\n", notation);
@@ -159,7 +188,7 @@ int main(void) {
         // Run implementation under test
 #ifdef USE_GENERATED
         // Only run generated impl for the case that matches its dims (7x3 * 3x6)
-        if (Ar == 7 && Ac == 3 && Br == 3 && Bc == 6) {
+        if (Ashape[0] == 7 && Ashape[1] == 3 && Bshape[0] == 3 && Bshape[1] == 6) {
             einsum_generated(A, B, C_impl);
         } else {
             printf("SKIP generated impl for notation %s (shape mismatch)\n", notation);

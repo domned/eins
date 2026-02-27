@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "einsum.h"
+#include "../einsum.h"
 
 // Convert literal like "ij" to bitmap (only lowercase a..z)
 IndexBitmap literal_to_bitmap(const char *lit) {

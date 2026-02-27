@@ -204,6 +204,44 @@ void parse_einsum_notation(const char *notation, char *in1, char *in2, char *out
     }
 }
 
+/* Permute tensor dimensions according to order array */
+Matrix* matrix_permute(const Matrix *src, const int *order) {
+    if (!src || !order) return NULL;
+    
+    int *new_shape = (int*)malloc(sizeof(int) * src->ndim);
+    for (int i = 0; i < src->ndim; i++) {
+        new_shape[i] = src->shape[order[i]];
+    }
+    
+    Matrix *dst = matrix_create_nd(src->ndim, new_shape, "per");
+    free(new_shape);
+
+    size_t total_elements = 1;
+    for (int i = 0; i < src->ndim; i++) total_elements *= (size_t)src->shape[i];
+
+    int *coords = (int*)calloc(src->ndim, sizeof(int));
+    int *src_coords = (int*)malloc(sizeof(int) * src->ndim);
+
+    for (size_t i = 0; i < total_elements; i++) {
+        for (int d = 0; d < src->ndim; d++) {
+            src_coords[order[d]] = coords[d];
+        }
+
+        double val = matrix_get_nd(src, src_coords);
+        dst->data[i] = val;
+
+        for (int d = src->ndim - 1; d >= 0; d--) {
+            coords[d]++;
+            if (coords[d] < dst->shape[d]) break;
+            coords[d] = 0;
+        }
+    }
+
+    free(coords);
+    free(src_coords);
+    return dst;
+}
+
 
 /* Count contracting indices between two index strings */
 static int count_contraction_indices(const char *in1, const char *in2) {
@@ -274,9 +312,10 @@ static BLASAnalysis analyze_blas_pattern(const char *notation,
         return result;
     }
     
-    /* GEMV: one index contracted, others preserved (e.g., "ij,j->i", "ijk,k->ij") */
+    /* GEMV: exactly one index contracted, and B is a true vector (1D) */
     if (num_sum_indices == 1 && 
-        ndim_out == (in1_len - 1 + in2_len - 1)) {
+        ndim_out == (in1_len - 1 + in2_len - 1) &&
+        B->ndim == 1) {
         result.pattern = BLAS_GEMV;
         return result;
     }
@@ -388,9 +427,9 @@ static Matrix* handle_axpy(const Matrix *A, const Matrix *B) {
 
 static Matrix* handle_ger(const Matrix *A, const Matrix *B,
                           const char *in1, const char *in2, const char *out) {
-    /* GER: outer product without shared indices (e.g., "i,j->ij", "ij,k->ijk") */
+    /* GER: outer product without shared indices using BLAS via permutation */
     
-    /* For true outer product (both 1D), use BLAS */
+    /* For true outer product (both 1D), use BLAS directly */
     if (A->ndim == 1 && B->ndim == 1) {
         int m = A->shape[0];
         int n = B->shape[0];
@@ -402,7 +441,39 @@ static Matrix* handle_ger(const Matrix *A, const Matrix *B,
         return result;
     }
     
-    /* For higher-dimensional tensors, build output shape by mapping indices to dimensions */
+    /* For higher-dimensional tensors, permute to 1D×1D, use BLAS, reshape back */
+    size_t A_size = 1, B_size = 1;
+    for (int i = 0; i < A->ndim; i++) A_size *= (size_t)A->shape[i];
+    for (int i = 0; i < B->ndim; i++) B_size *= (size_t)B->shape[i];
+    
+    /* Create 1D versions by reshaping (permutation with single output dimension) */
+    int shape_1d_A[1] = {(int)A_size};
+    int shape_1d_B[1] = {(int)B_size};
+    
+    Matrix *A_1d = matrix_create_nd(1, shape_1d_A, "a");
+    Matrix *B_1d = matrix_create_nd(1, shape_1d_B, "b");
+    if (!A_1d || !B_1d) {
+        matrix_free(A_1d);
+        matrix_free(B_1d);
+        return NULL;
+    }
+    
+    /* Copy data (flatten) */
+    memcpy(A_1d->data, A->data, A_size * sizeof(double));
+    memcpy(B_1d->data, B->data, B_size * sizeof(double));
+    
+    /* Call BLAS outer product */
+    int result_shape[2] = {(int)A_size, (int)B_size};
+    Matrix *result_2d = matrix_create_nd(2, result_shape, "ab");
+    if (!result_2d) {
+        matrix_free(A_1d);
+        matrix_free(B_1d);
+        return NULL;
+    }
+    
+    blas_ger((int)A_size, (int)B_size, 1.0, A_1d->data, 1, B_1d->data, 1, result_2d->data, (int)B_size);
+    
+    /* Reshape result back to n-dimensional */
     int out_shape[26];
     int out_len = (int)strlen(out);
     
@@ -410,7 +481,6 @@ static Matrix* handle_ger(const Matrix *A, const Matrix *B,
         char idx_char = out[i];
         int found = 0;
         
-        /* Find this index in in1 */
         for (int j = 0; j < A->ndim; j++) {
             if (in1[j] == idx_char) {
                 out_shape[i] = A->shape[j];
@@ -419,7 +489,6 @@ static Matrix* handle_ger(const Matrix *A, const Matrix *B,
             }
         }
         
-        /* Find in in2 if not found */
         if (!found) {
             for (int j = 0; j < B->ndim; j++) {
                 if (in2[j] == idx_char) {
@@ -430,166 +499,108 @@ static Matrix* handle_ger(const Matrix *A, const Matrix *B,
             }
         }
         
-        if (!found) return NULL;
+        if (!found) {
+            matrix_free(A_1d);
+            matrix_free(B_1d);
+            matrix_free(result_2d);
+            return NULL;
+        }
     }
     
     Matrix *result = matrix_create_nd(out_len, out_shape, out);
-    if (!result) return NULL;
-    
-    /* Iterate over all elements */
-    int A_idx[26], B_idx[26], out_idx[26];
-    memset(A_idx, 0, sizeof(A_idx));
-    memset(B_idx, 0, sizeof(B_idx));
-    memset(out_idx, 0, sizeof(out_idx));
-    
-    int finished = 0;
-    while (!finished) {
-        /* Map output indices to input indices */
-        for (int i = 0; i < out_len; i++) {
-            char idx_char = out[i];
-            for (int j = 0; j < A->ndim; j++) {
-                if (in1[j] == idx_char) A_idx[j] = out_idx[i];
-            }
-            for (int j = 0; j < B->ndim; j++) {
-                if (in2[j] == idx_char) B_idx[j] = out_idx[i];
-            }
-        }
-        
-        double a_val = matrix_get_nd(A, A_idx);
-        double b_val = matrix_get_nd(B, B_idx);
-        size_t out_off = compute_offset(result, out_idx);
-        result->data[out_off] = a_val * b_val;
-        
-        next_indices(out_idx, out_shape, out_len, &finished);
+    if (!result) {
+        matrix_free(A_1d);
+        matrix_free(B_1d);
+        matrix_free(result_2d);
+        return NULL;
     }
+    
+    /* Copy flattened 2D result to n-dimensional result */
+    memcpy(result->data, result_2d->data, A_size * B_size * sizeof(double));
+    
+    matrix_free(A_1d);
+    matrix_free(B_1d);
+    matrix_free(result_2d);
     
     return result;
 }
 
 static Matrix* handle_gemv(const Matrix *A, const Matrix *B,
                            const char *in1, const char *in2, const char *out) {
-    /* GEMV: contract one index (e.g., "ij,j->i", "ijk,k->ij") */
+    /* GEMV: contract one index where B is a vector (e.g., "ij,j->i", "ijk,k->ij") */
     
-    /* For true 2D × 1D or 1D × 2D operations, use BLAS directly */
-    if ((A->ndim == 2 && B->ndim == 1) || (A->ndim == 1 && B->ndim == 2)) {
-        const Matrix *mat = (A->ndim == 2) ? A : B;
-        const double *vec = (A->ndim == 2) ? B->data : A->data;
-        int m = mat->shape[0];
-        int n = mat->shape[1];
-        
-        int result_shape[1] = {(A->ndim == 2) ? m : n};
-        Matrix *result = matrix_create_nd(1, result_shape, out);
-        if (!result) return NULL;
-        
-        char trans = (A->ndim == 1) ? 'T' : 'N';
-        blas_gemv(trans, m, n, 1.0, mat->data, n, vec, 1, 0.0, result->data, 1);
-        return result;
-    }
+    /* B is guaranteed to be 1D at this point */
+    if (B->ndim != 1) return NULL;
     
-    /* For higher-dimensional tensors, use manual iteration (BLAS not compatible) */
     /* Find the contraction index */
-    char contract_idx = 0;
-    for (int i = 0; i < (int)strlen(in1); i++) {
-        if (strchr(in2, in1[i]) && !strchr(out, in1[i])) {
-            contract_idx = in1[i];
-            break;
-        }
-    }
+    char contract_idx = in2[0];  /* B has only one dimension, and it must be contracted */
+    if (!strchr(in1, contract_idx)) return NULL;
     
-    if (!contract_idx) return NULL;
-    
-    /* Find position of contract index in each input */
-    int contract_pos_A = -1, contract_pos_B = -1;
+    int contract_pos_A = -1;
     for (int i = 0; i < A->ndim; i++) {
-        if (in1[i] == contract_idx) {
-            contract_pos_A = i;
-            break;
+        if (in1[i] == contract_idx) contract_pos_A = i;
+    }
+    if (contract_pos_A < 0) return NULL;
+    if (A->shape[contract_pos_A] != B->shape[0]) return NULL;
+    
+    /* Build permutation for A: output indices first, then contracted */
+    int perm_A[26];
+    int p_a = 0;
+    for (int i = 0; i < (int)strlen(out); i++) {
+        for (int j = 0; j < A->ndim; j++) {
+            if (in1[j] == out[i]) {
+                perm_A[p_a++] = j;
+                break;
+            }
         }
     }
-    for (int i = 0; i < B->ndim; i++) {
-        if (in2[i] == contract_idx) {
-            contract_pos_B = i;
-            break;
+    perm_A[p_a++] = contract_pos_A;
+    
+    /* Permute A */
+    Matrix *A_perm = matrix_permute(A, perm_A);
+    if (!A_perm) return NULL;
+    
+    /* Calculate BLAS gemv dimensions */
+    int m = 1;
+    for (int i = 0; i < (int)strlen(out); i++) {
+        for (int j = 0; j < A->ndim; j++) {
+            if (in1[j] == out[i]) {
+                m *= A->shape[j];
+                break;
+            }
         }
     }
-    
-    if (contract_pos_A < 0 || contract_pos_B < 0) return NULL;
-    if (A->shape[contract_pos_A] != B->shape[contract_pos_B]) return NULL;
-    
-    int contract_size = A->shape[contract_pos_A];
+    int k = B->shape[0];  /* contraction size */
     
     /* Build output shape */
     int out_shape[26];
     int out_len = (int)strlen(out);
-    
     for (int i = 0; i < out_len; i++) {
         char idx_char = out[i];
-        int found = 0;
-        
         for (int j = 0; j < A->ndim; j++) {
             if (in1[j] == idx_char) {
                 out_shape[i] = A->shape[j];
-                found = 1;
                 break;
             }
         }
-        
-        if (!found) {
-            for (int j = 0; j < B->ndim; j++) {
-                if (in2[j] == idx_char) {
-                    out_shape[i] = B->shape[j];
-                    found = 1;
-                    break;
-                }
-            }
-        }
-        
-        if (!found) return NULL;
     }
     
     Matrix *result = matrix_create_nd(out_len, out_shape, out);
-    if (!result) return NULL;
-    
-    /* Manual iteration and contraction */
-    int A_idx[26], B_idx[26], out_idx[26];
-    memset(A_idx, 0, sizeof(A_idx));
-    memset(B_idx, 0, sizeof(B_idx));
-    memset(out_idx, 0, sizeof(out_idx));
-    
-    int finished = 0;
-    while (!finished) {
-        /* Map output indices to input indices */
-        for (int i = 0; i < out_len; i++) {
-            char idx_char = out[i];
-            for (int j = 0; j < A->ndim; j++) {
-                if (in1[j] == idx_char) A_idx[j] = out_idx[i];
-            }
-            for (int j = 0; j < B->ndim; j++) {
-                if (in2[j] == idx_char) B_idx[j] = out_idx[i];
-            }
-        }
-        
-        double sum = 0.0;
-        for (int c = 0; c < contract_size; c++) {
-            A_idx[contract_pos_A] = c;
-            B_idx[contract_pos_B] = c;
-            double a_val = matrix_get_nd(A, A_idx);
-            double b_val = matrix_get_nd(B, B_idx);
-            sum += a_val * b_val;
-        }
-        
-        size_t out_off = compute_offset(result, out_idx);
-        result->data[out_off] = sum;
-        
-        next_indices(out_idx, out_shape, out_len, &finished);
+    if (!result) {
+        matrix_free(A_perm);
+        return NULL;
     }
     
+    /* Call BLAS GEMV: y := A*x where A is m×k, x is k, y is m */
+    blas_gemv('N', m, k, 1.0, A_perm->data, k, B->data, 1, 0.0, result->data, 1);
+    
+    matrix_free(A_perm);
     return result;
 }
 
 static Matrix* handle_gemm(const Matrix *A, const Matrix *B, 
                            const char *in1, const char *in2, const char *out) {
-    /* GEMM: contract one index with multiple free indices (e.g., "ij,jk->ik", "ijk,kjl->ijl") */
+    /* GEMM: contract one index with multiple free indices using BLAS via permutation */
     
     /* Find the contraction index */
     char contract_idx = 0;
@@ -599,49 +610,84 @@ static Matrix* handle_gemm(const Matrix *A, const Matrix *B,
             break;
         }
     }
-    
     if (!contract_idx) return NULL;
     
-    /* Find position of contract index in each input */
+    /* Find positions of contraction index */
     int contract_pos_A = -1, contract_pos_B = -1;
     for (int i = 0; i < A->ndim; i++) {
-        if (in1[i] == contract_idx) {
-            contract_pos_A = i;
-            break;
-        }
+        if (in1[i] == contract_idx) contract_pos_A = i;
     }
     for (int i = 0; i < B->ndim; i++) {
-        if (in2[i] == contract_idx) {
-            contract_pos_B = i;
-            break;
-        }
+        if (in2[i] == contract_idx) contract_pos_B = i;
     }
-    
     if (contract_pos_A < 0 || contract_pos_B < 0) return NULL;
     if (A->shape[contract_pos_A] != B->shape[contract_pos_B]) return NULL;
     
     int k = A->shape[contract_pos_A];  /* contraction size */
     
-    /* For true 2D × 2D matrix multiply, use BLAS directly */
-    if (A->ndim == 2 && B->ndim == 2) {
-        int m = A->shape[0];
-        int n = B->shape[1];
-        
-        if (B->shape[0] != k) return NULL;
-        
-        int out_shape[2] = {m, n};
-        Matrix *result = matrix_create_nd(2, out_shape, out);
-        if (!result) return NULL;
-        
-        blas_gemm('N', 'N', m, n, k, 1.0, A->data, k, B->data, n, 0.0, result->data, n);
-        return result;
+    /* Build permutation for A: free indices (from out) first, then contracted */
+    int perm_A[26];
+    int p_a = 0;
+    for (int i = 0; i < (int)strlen(out); i++) {
+        char out_idx = out[i];
+        /* Find if this output index is in A */
+        for (int j = 0; j < A->ndim; j++) {
+            if (in1[j] == out_idx) {
+                perm_A[p_a++] = j;
+                break;
+            }
+        }
+    }
+    perm_A[p_a++] = contract_pos_A;
+    
+    /* Build permutation for B: contracted index first, then free indices */
+    int perm_B[26];
+    int p_b = 0;
+    perm_B[p_b++] = contract_pos_B;
+    for (int i = 0; i < (int)strlen(out); i++) {
+        char out_idx = out[i];
+        /* Find if this output index is in B */
+        for (int j = 0; j < B->ndim; j++) {
+            if (in2[j] == out_idx && j != contract_pos_B) {
+                perm_B[p_b++] = j;
+                break;
+            }
+        }
     }
     
-    /* For higher-dimensional tensors, use manual iteration */
+    /* Permute both inputs */
+    Matrix *A_perm = matrix_permute(A, perm_A);
+    Matrix *B_perm = matrix_permute(B, perm_B);
+    if (!A_perm || !B_perm) {
+        if (A_perm) matrix_free(A_perm);
+        if (B_perm) matrix_free(B_perm);
+        return NULL;
+    }
+    
+    /* Calculate GEMM dimensions: C(m,n) = A(m,k) * B(k,n) */
+    int m = 1;
+    for (int i = 0; i < (int)strlen(out); i++) {
+        for (int j = 0; j < A->ndim; j++) {
+            if (in1[j] == out[i]) {
+                m *= A->shape[j];
+                break;
+            }
+        }
+    }
+    
+    int n = 1;
+    for (int i = 0; i < (int)strlen(out); i++) {
+        for (int j = 0; j < B->ndim; j++) {
+            if (in2[j] == out[i]) {
+                n *= B->shape[j];
+                break;
+            }
+        }
+    }
+    
     /* Build output shape */
     int out_shape[26];
     int out_len = (int)strlen(out);
-    
     for (int i = 0; i < out_len; i++) {
         char idx_char = out[i];
         int found = 0;
@@ -663,46 +709,20 @@ static Matrix* handle_gemm(const Matrix *A, const Matrix *B,
                 }
             }
         }
-        
-        if (!found) return NULL;
     }
     
     Matrix *result = matrix_create_nd(out_len, out_shape, out);
-    if (!result) return NULL;
-    
-    /* Manual iteration and contraction */
-    int A_idx[26], B_idx[26], out_idx[26];
-    memset(A_idx, 0, sizeof(A_idx));
-    memset(B_idx, 0, sizeof(B_idx));
-    memset(out_idx, 0, sizeof(out_idx));
-    
-    int finished = 0;
-    while (!finished) {
-        /* Map output indices to input indices */
-        for (int i = 0; i < out_len; i++) {
-            char idx_char = out[i];
-            for (int j = 0; j < A->ndim; j++) {
-                if (in1[j] == idx_char) A_idx[j] = out_idx[i];
-            }
-            for (int j = 0; j < B->ndim; j++) {
-                if (in2[j] == idx_char) B_idx[j] = out_idx[i];
-            }
-        }
-        
-        double sum = 0.0;
-        for (int c = 0; c < k; c++) {
-            A_idx[contract_pos_A] = c;
-            B_idx[contract_pos_B] = c;
-            double a_val = matrix_get_nd(A, A_idx);
-            double b_val = matrix_get_nd(B, B_idx);
-            sum += a_val * b_val;
-        }
-        
-        size_t out_off = compute_offset(result, out_idx);
-        result->data[out_off] = sum;
-        
-        next_indices(out_idx, out_shape, out_len, &finished);
+    if (!result) {
+        matrix_free(A_perm);
+        matrix_free(B_perm);
+        return NULL;
     }
+    
+    /* Call BLAS: C(m,n) = A(m,k) * B(k,n) */
+    blas_gemm('N', 'N', m, n, k, 1.0, A_perm->data, k, B_perm->data, n, 0.0, result->data, n);
+    
+    matrix_free(A_perm);
+    matrix_free(B_perm);
     
     return result;
 }
