@@ -204,6 +204,25 @@ void parse_einsum_notation(const char *notation, char *in1, char *in2, char *out
 }
 
 
+/* Count contracting indices between two index strings */
+static int count_contraction_indices(const char *in1, const char *in2) {
+    if (!in1 || !in2) return 0;
+    int count = 0;
+    for (const char *p = in1; *p; p++) {
+        if (strchr(in2, *p)) count++;
+    }
+    return count;
+}
+
+/* Check if all indices in in1 appear in out */
+static int all_indices_in(const char *in1, const char *out) {
+    if (!in1 || !out) return 1;
+    for (const char *p = in1; *p; p++) {
+        if (!strchr(out, *p)) return 0;
+    }
+    return 1;
+}
+
 static BLASAnalysis analyze_blas_pattern(const char *notation, 
                                          const Matrix *A, 
                                          const Matrix *B) {
@@ -215,6 +234,8 @@ static BLASAnalysis analyze_blas_pattern(const char *notation,
     int ndim_A = A->ndim;
     int ndim_B = B->ndim;
     int ndim_out = (int)strlen(out);
+    int in1_len = (int)strlen(in1);
+    int in2_len = (int)strlen(in2);
     
     IndexBitmap bm1 = literal_to_bitmap(in1);
     IndexBitmap bm2 = literal_to_bitmap(in2);
@@ -231,45 +252,37 @@ static BLASAnalysis analyze_blas_pattern(const char *notation,
     result.num_free_indices = ndim_out;
     result.has_output = (ndim_out > 0) ? 1 : 0;
     
-    /* DOT: "i,i->" */
-    if (ndim_A == 1 && ndim_B == 1 && ndim_out == 0 && 
-        in1[0] == in2[0] && in1[0] >= 'a' && in1[0] <= 'z') {
+    /* DOT: all indices match and contract to scalar (e.g., "i,i->", "ij,ij->") */
+    if (ndim_out == 0 && ndim_A == ndim_B && in1_len == in2_len &&
+        strcmp(in1, in2) == 0) {
         result.pattern = BLAS_DOT;
         return result;
     }
     
-    /* AXPY: "i,i->i" */
-    if (ndim_A == 1 && ndim_B == 1 && ndim_out == 1 && 
-        in1[0] == in2[0] && in1[0] == out[0]) {
+    /* AXPY: same indices, same output (element-wise add: "i,i->i", "ij,ij->ij") */
+    if (strcmp(in1, in2) == 0 && strcmp(in1, out) == 0 && ndim_A == ndim_B) {
         result.pattern = BLAS_AXPY;
         return result;
     }
     
-    /* GER: "i,j->ij" */
-    if (ndim_A == 1 && ndim_B == 1 && ndim_out == 2 &&
-        ((in1[0] == out[0] && in2[0] == out[1]) ||
-         (in1[0] == out[1] && in2[0] == out[0]))) {
+    /* GER: outer product - no shared indices, all appear in output (e.g., "i,j->ij", "ij,k->ijk") */
+    if (count_contraction_indices(in1, in2) == 0 && 
+        all_indices_in(in1, out) && all_indices_in(in2, out) &&
+        ndim_out == in1_len + in2_len) {
         result.pattern = BLAS_GER;
         return result;
     }
     
-    /* GEMV: "ij,j->i" */
-    if (ndim_A == 2 && ndim_B == 1 && ndim_out == 1 &&
-        in1[1] == in2[0] && in1[0] == out[0]) {
+    /* GEMV: one index contracted, others preserved (e.g., "ij,j->i", "ijk,k->ij") */
+    if (num_sum_indices == 1 && 
+        ndim_out == (in1_len - 1 + in2_len - 1)) {
         result.pattern = BLAS_GEMV;
         return result;
     }
     
-    /* GEMV: "i,ij->j" */
-    if (ndim_A == 1 && ndim_B == 2 && ndim_out == 1 &&
-        in1[0] == in2[0] && in2[1] == out[0]) {
-        result.pattern = BLAS_GEMV;
-        return result;
-    }
-    
-    /* GEMM: "ij,jk->ik" */
-    if (ndim_A == 2 && ndim_B == 2 && ndim_out == 2 &&
-        in1[1] == in2[0] && in1[0] == out[0] && in2[1] == out[1]) {
+    /* GEMM: one or more contractions with free indices preserved (e.g., "ij,jc->ic", "ijk,kjl->ijl") */
+    if (num_sum_indices >= 1 && 
+        ndim_out == (in1_len + in2_len - 2 * num_sum_indices)) {
         result.pattern = BLAS_GEMM;
         return result;
     }
@@ -353,11 +366,23 @@ static void blas_gemm(char transA, char transB, int m, int n, int k,
 
 
 static Matrix* handle_dot(const Matrix *A, const Matrix *B) {
-    if (A->ndim != 1 || B->ndim != 1 || A->shape[0] != B->shape[0]) {
+    /* DOT: contract all indices (e.g., "ij,ij->" or "i,i->") */
+    if (A->ndim != B->ndim) {
         return NULL;
     }
     
-    double dot_result = blas_dot(A->data, A->shape[0], 1, B->data, 1);
+    /* Check shapes match */
+    for (int d = 0; d < A->ndim; d++) {
+        if (A->shape[d] != B->shape[d]) return NULL;
+    }
+    
+    double dot_result = 0.0;
+    size_t total = 1;
+    for (int d = 0; d < A->ndim; d++) total *= (size_t)A->shape[d];
+    
+    for (size_t i = 0; i < total; i++) {
+        dot_result += A->data[i] * B->data[i];
+    }
     
     int scalar_shape[1] = {1};
     Matrix *result = matrix_create_nd(1, scalar_shape, "");
@@ -369,98 +394,307 @@ static Matrix* handle_dot(const Matrix *A, const Matrix *B) {
 }
 
 static Matrix* handle_axpy(const Matrix *A, const Matrix *B) {
-    if (A->ndim != 1 || B->ndim != 1 || A->shape[0] != B->shape[0]) {
+    /* AXPY: element-wise add with same shape and indices (e.g., "i,i->i" or "ij,ij->ij") */
+    if (A->ndim != B->ndim) {
         return NULL;
     }
     
-    int shape[1] = {A->shape[0]};
-    Matrix *result = matrix_create_nd(1, shape, "i");
+    for (int d = 0; d < A->ndim; d++) {
+        if (A->shape[d] != B->shape[d]) return NULL;
+    }
+    
+    size_t total = 1;
+    for (int d = 0; d < A->ndim; d++) total *= (size_t)A->shape[d];
+    
+    char indices_str[32] = "";
+    for (int d = 0; d < A->ndim; d++) {
+        indices_str[d] = 'a' + d;
+    }
+    indices_str[A->ndim] = '\0';
+    
+    Matrix *result = matrix_create_nd(A->ndim, A->shape, indices_str);
     if (!result) return NULL;
     
-    memcpy(result->data, A->data, sizeof(double) * A->shape[0]);
-    blas_axpy(A->shape[0], 1.0, B->data, 1, result->data, 1);
+    memcpy(result->data, A->data, sizeof(double) * total);
+    for (size_t i = 0; i < total; i++) {
+        result->data[i] += B->data[i];
+    }
     
     return result;
 }
 
 static Matrix* handle_ger(const Matrix *A, const Matrix *B,
                           const char *in1, const char *in2, const char *out) {
-    if (A->ndim != 1 || B->ndim != 1) {
-        return NULL;
+    /* GER: outer product without shared indices (e.g., "i,j->ij", "ij,k->ijk") */
+    
+    /* Build output shape by mapping indices to dimensions */
+    int out_shape[26];
+    int out_len = (int)strlen(out);
+    
+    for (int i = 0; i < out_len; i++) {
+        char idx_char = out[i];
+        int found = 0;
+        
+        /* Find this index in in1 */
+        for (int j = 0; j < A->ndim; j++) {
+            if (in1[j] == idx_char) {
+                out_shape[i] = A->shape[j];
+                found = 1;
+                break;
+            }
+        }
+        
+        /* Find in in2 if not found */
+        if (!found) {
+            for (int j = 0; j < B->ndim; j++) {
+                if (in2[j] == idx_char) {
+                    out_shape[i] = B->shape[j];
+                    found = 1;
+                    break;
+                }
+            }
+        }
+        
+        if (!found) return NULL;
     }
     
-    int m, n;
-    const double *x, *y;
-    
-    if (in1[0] == out[0]) {
-        m = A->shape[0];
-        n = B->shape[0];
-        x = A->data;
-        y = B->data;
-    } else {
-        m = B->shape[0];
-        n = A->shape[0];
-        x = B->data;
-        y = A->data;
-    }
-    
-    int out_shape[2] = {m, n};
-    Matrix *result = matrix_create_nd(2, out_shape, out);
+    Matrix *result = matrix_create_nd(out_len, out_shape, out);
     if (!result) return NULL;
     
-    blas_ger(m, n, 1.0, x, 1, y, 1, result->data, n);
+    /* Iterate over all elements */
+    int A_idx[26], B_idx[26], out_idx[26];
+    memset(A_idx, 0, sizeof(A_idx));
+    memset(B_idx, 0, sizeof(B_idx));
+    memset(out_idx, 0, sizeof(out_idx));
+    
+    int finished = 0;
+    while (!finished) {
+        /* Map output indices to input indices */
+        for (int i = 0; i < out_len; i++) {
+            char idx_char = out[i];
+            for (int j = 0; j < A->ndim; j++) {
+                if (in1[j] == idx_char) A_idx[j] = out_idx[i];
+            }
+            for (int j = 0; j < B->ndim; j++) {
+                if (in2[j] == idx_char) B_idx[j] = out_idx[i];
+            }
+        }
+        
+        double a_val = matrix_get_nd(A, A_idx);
+        double b_val = matrix_get_nd(B, B_idx);
+        size_t out_off = compute_offset(result, out_idx);
+        result->data[out_off] = a_val * b_val;
+        
+        next_indices(out_idx, out_shape, out_len, &finished);
+    }
     
     return result;
 }
 
 static Matrix* handle_gemv(const Matrix *A, const Matrix *B,
-                           const char *out) {
-    const Matrix *mat;
-    const double *vec;
-    int m, n;
+                           const char *in1, const char *in2, const char *out) {
+    /* GEMV: contract one index (e.g., "ij,j->i", "ijk,k->ij") */
     
-    if (A->ndim == 2 && B->ndim == 1) {
-        mat = A;
-        vec = B->data;
-        m = A->shape[0];
-        n = A->shape[1];
-    } else if (A->ndim == 1 && B->ndim == 2) {
-        mat = B;
-        vec = A->data;
-        m = B->shape[0];
-        n = B->shape[1];
-    } else {
-        return NULL;
+    /* Find the contraction index */
+    char contract_idx = 0;
+    for (int i = 0; i < (int)strlen(in1); i++) {
+        if (strchr(in2, in1[i]) && !strchr(out, in1[i])) {
+            contract_idx = in1[i];
+            break;
+        }
     }
     
-    int result_shape[1] = {(A->ndim == 2) ? m : n};
-    Matrix *result = matrix_create_nd(1, result_shape, out);
+    if (!contract_idx) return NULL;
+    
+    /* Find position of contract index in each input */
+    int contract_pos_A = -1, contract_pos_B = -1;
+    for (int i = 0; i < A->ndim; i++) {
+        if (in1[i] == contract_idx) {
+            contract_pos_A = i;
+            break;
+        }
+    }
+    for (int i = 0; i < B->ndim; i++) {
+        if (in2[i] == contract_idx) {
+            contract_pos_B = i;
+            break;
+        }
+    }
+    
+    if (contract_pos_A < 0 || contract_pos_B < 0) return NULL;
+    if (A->shape[contract_pos_A] != B->shape[contract_pos_B]) return NULL;
+    
+    int contract_size = A->shape[contract_pos_A];
+    
+    /* Build output shape */
+    int out_shape[26];
+    int out_len = (int)strlen(out);
+    
+    for (int i = 0; i < out_len; i++) {
+        char idx_char = out[i];
+        int found = 0;
+        
+        for (int j = 0; j < A->ndim; j++) {
+            if (in1[j] == idx_char) {
+                out_shape[i] = A->shape[j];
+                found = 1;
+                break;
+            }
+        }
+        
+        if (!found) {
+            for (int j = 0; j < B->ndim; j++) {
+                if (in2[j] == idx_char) {
+                    out_shape[i] = B->shape[j];
+                    found = 1;
+                    break;
+                }
+            }
+        }
+        
+        if (!found) return NULL;
+    }
+    
+    Matrix *result = matrix_create_nd(out_len, out_shape, out);
     if (!result) return NULL;
     
-    char trans = (A->ndim == 1) ? 'T' : 'N';
-    blas_gemv(trans, m, n, 1.0, mat->data, n, vec, 1, 0.0, result->data, 1);
+    /* Iterate and contract */
+    int A_idx[26], B_idx[26], out_idx[26];
+    memset(A_idx, 0, sizeof(A_idx));
+    memset(B_idx, 0, sizeof(B_idx));
+    memset(out_idx, 0, sizeof(out_idx));
+    
+    int finished = 0;
+    while (!finished) {
+        /* Map output indices to input indices */
+        for (int i = 0; i < out_len; i++) {
+            char idx_char = out[i];
+            for (int j = 0; j < A->ndim; j++) {
+                if (in1[j] == idx_char) A_idx[j] = out_idx[i];
+            }
+            for (int j = 0; j < B->ndim; j++) {
+                if (in2[j] == idx_char) B_idx[j] = out_idx[i];
+            }
+        }
+        
+        double sum = 0.0;
+        for (int c = 0; c < contract_size; c++) {
+            A_idx[contract_pos_A] = c;
+            B_idx[contract_pos_B] = c;
+            double a_val = matrix_get_nd(A, A_idx);
+            double b_val = matrix_get_nd(B, B_idx);
+            sum += a_val * b_val;
+        }
+        
+        size_t out_off = compute_offset(result, out_idx);
+        result->data[out_off] = sum;
+        
+        next_indices(out_idx, out_shape, out_len, &finished);
+    }
     
     return result;
 }
 
-static Matrix* handle_gemm(const Matrix *A, const Matrix *B, const char *out) {
-    if (A->ndim != 2 || B->ndim != 2) {
-        return NULL;
+static Matrix* handle_gemm(const Matrix *A, const Matrix *B, 
+                           const char *in1, const char *in2, const char *out) {
+    /* GEMM: contract one index with multiple free indices (e.g., "ij,jk->ik", "ijk,kjl->ijl") */
+    
+    /* Find the contraction index */
+    char contract_idx = 0;
+    for (int i = 0; i < (int)strlen(in1); i++) {
+        if (strchr(in2, in1[i]) && !strchr(out, in1[i])) {
+            contract_idx = in1[i];
+            break;
+        }
     }
     
-    int m = A->shape[0];
-    int n = B->shape[1];
-    int k = A->shape[1];
+    if (!contract_idx) return NULL;
     
-    if (B->shape[0] != k) {
-        return NULL;
+    /* Find position of contract index in each input */
+    int contract_pos_A = -1, contract_pos_B = -1;
+    for (int i = 0; i < A->ndim; i++) {
+        if (in1[i] == contract_idx) {
+            contract_pos_A = i;
+            break;
+        }
+    }
+    for (int i = 0; i < B->ndim; i++) {
+        if (in2[i] == contract_idx) {
+            contract_pos_B = i;
+            break;
+        }
     }
     
-    int out_shape[2] = {m, n};
-    Matrix *result = matrix_create_nd(2, out_shape, out);
+    if (contract_pos_A < 0 || contract_pos_B < 0) return NULL;
+    if (A->shape[contract_pos_A] != B->shape[contract_pos_B]) return NULL;
+    
+    int contract_size = A->shape[contract_pos_A];
+    
+    /* Build output shape */
+    int out_shape[26];
+    int out_len = (int)strlen(out);
+    
+    for (int i = 0; i < out_len; i++) {
+        char idx_char = out[i];
+        int found = 0;
+        
+        for (int j = 0; j < A->ndim; j++) {
+            if (in1[j] == idx_char) {
+                out_shape[i] = A->shape[j];
+                found = 1;
+                break;
+            }
+        }
+        
+        if (!found) {
+            for (int j = 0; j < B->ndim; j++) {
+                if (in2[j] == idx_char) {
+                    out_shape[i] = B->shape[j];
+                    found = 1;
+                    break;
+                }
+            }
+        }
+        
+        if (!found) return NULL;
+    }
+    
+    Matrix *result = matrix_create_nd(out_len, out_shape, out);
     if (!result) return NULL;
     
-    blas_gemm('N', 'N', m, n, k, 1.0, A->data, k, B->data, n, 0.0, result->data, n);
+    /* Iterate and contract */
+    int A_idx[26], B_idx[26], out_idx[26];
+    memset(A_idx, 0, sizeof(A_idx));
+    memset(B_idx, 0, sizeof(B_idx));
+    memset(out_idx, 0, sizeof(out_idx));
+    
+    int finished = 0;
+    while (!finished) {
+        /* Map output indices to input indices */
+        for (int i = 0; i < out_len; i++) {
+            char idx_char = out[i];
+            for (int j = 0; j < A->ndim; j++) {
+                if (in1[j] == idx_char) A_idx[j] = out_idx[i];
+            }
+            for (int j = 0; j < B->ndim; j++) {
+                if (in2[j] == idx_char) B_idx[j] = out_idx[i];
+            }
+        }
+        
+        double sum = 0.0;
+        for (int c = 0; c < contract_size; c++) {
+            A_idx[contract_pos_A] = c;
+            B_idx[contract_pos_B] = c;
+            double a_val = matrix_get_nd(A, A_idx);
+            double b_val = matrix_get_nd(B, B_idx);
+            sum += a_val * b_val;
+        }
+        
+        size_t out_off = compute_offset(result, out_idx);
+        result->data[out_off] = sum;
+        
+        next_indices(out_idx, out_shape, out_len, &finished);
+    }
     
     return result;
 }
@@ -494,9 +728,9 @@ Matrix* einsum(const char *notation, const Matrix *A, const Matrix *B) {
         case BLAS_GER:
             return handle_ger(A, B, in1, in2, out);
         case BLAS_GEMV:
-            return handle_gemv(A, B, out);
+            return handle_gemv(A, B, in1, in2, out);
         case BLAS_GEMM:
-            return handle_gemm(A, B, out);
+            return handle_gemm(A, B, in1, in2, out);
         case BLAS_GENERAL:
         default:
             fprintf(stderr, "Error: Pattern not supported by BLAS implementation: %s\n", notation);
