@@ -342,13 +342,11 @@ static Matrix* handle_dot(const Matrix *A, const Matrix *B) {
         if (A->shape[d] != B->shape[d]) return NULL;
     }
     
-    double dot_result = 0.0;
+    /* Flatten to 1D vectors and use BLAS ddot */
     size_t total = 1;
     for (int d = 0; d < A->ndim; d++) total *= (size_t)A->shape[d];
     
-    for (size_t i = 0; i < total; i++) {
-        dot_result += A->data[i] * B->data[i];
-    }
+    double dot_result = blas_dot(A->data, (int)total, 1, B->data, 1);
     
     int scalar_shape[1] = {1};
     Matrix *result = matrix_create_nd(1, scalar_shape, "");
@@ -382,9 +380,8 @@ static Matrix* handle_axpy(const Matrix *A, const Matrix *B) {
     if (!result) return NULL;
     
     memcpy(result->data, A->data, sizeof(double) * total);
-    for (size_t i = 0; i < total; i++) {
-        result->data[i] += B->data[i];
-    }
+    /* Use BLAS daxpy: y := y + alpha*x */
+    blas_axpy((int)total, 1.0, B->data, 1, result->data, 1);
     
     return result;
 }
@@ -489,7 +486,7 @@ static Matrix* handle_gemv(const Matrix *A, const Matrix *B,
         return result;
     }
     
-    /* For higher-dimensional tensors, use manual iteration */
+    /* For higher-dimensional tensors, use manual iteration (BLAS not compatible) */
     /* Find the contraction index */
     char contract_idx = 0;
     for (int i = 0; i < (int)strlen(in1); i++) {
@@ -553,7 +550,7 @@ static Matrix* handle_gemv(const Matrix *A, const Matrix *B,
     Matrix *result = matrix_create_nd(out_len, out_shape, out);
     if (!result) return NULL;
     
-    /* Iterate and contract */
+    /* Manual iteration and contraction */
     int A_idx[26], B_idx[26], out_idx[26];
     memset(A_idx, 0, sizeof(A_idx));
     memset(B_idx, 0, sizeof(B_idx));
@@ -594,24 +591,6 @@ static Matrix* handle_gemm(const Matrix *A, const Matrix *B,
                            const char *in1, const char *in2, const char *out) {
     /* GEMM: contract one index with multiple free indices (e.g., "ij,jk->ik", "ijk,kjl->ijl") */
     
-    /* For true 2D × 2D matrix multiply, use BLAS directly */
-    if (A->ndim == 2 && B->ndim == 2 && 
-        in1[1] == in2[0] && in1[0] == out[0] && in2[1] == out[1]) {
-        int m = A->shape[0];
-        int n = B->shape[1];
-        int k = A->shape[1];
-        
-        if (B->shape[0] != k) return NULL;
-        
-        int out_shape[2] = {m, n};
-        Matrix *result = matrix_create_nd(2, out_shape, out);
-        if (!result) return NULL;
-        
-        blas_gemm('N', 'N', m, n, k, 1.0, A->data, k, B->data, n, 0.0, result->data, n);
-        return result;
-    }
-    
-    /* For higher-dimensional tensors or more complex patterns, use manual iteration */
     /* Find the contraction index */
     char contract_idx = 0;
     for (int i = 0; i < (int)strlen(in1); i++) {
@@ -641,8 +620,24 @@ static Matrix* handle_gemm(const Matrix *A, const Matrix *B,
     if (contract_pos_A < 0 || contract_pos_B < 0) return NULL;
     if (A->shape[contract_pos_A] != B->shape[contract_pos_B]) return NULL;
     
-    int contract_size = A->shape[contract_pos_A];
+    int k = A->shape[contract_pos_A];  /* contraction size */
     
+    /* For true 2D × 2D matrix multiply, use BLAS directly */
+    if (A->ndim == 2 && B->ndim == 2) {
+        int m = A->shape[0];
+        int n = B->shape[1];
+        
+        if (B->shape[0] != k) return NULL;
+        
+        int out_shape[2] = {m, n};
+        Matrix *result = matrix_create_nd(2, out_shape, out);
+        if (!result) return NULL;
+        
+        blas_gemm('N', 'N', m, n, k, 1.0, A->data, k, B->data, n, 0.0, result->data, n);
+        return result;
+    }
+    
+    /* For higher-dimensional tensors, use manual iteration */
     /* Build output shape */
     int out_shape[26];
     int out_len = (int)strlen(out);
@@ -675,7 +670,7 @@ static Matrix* handle_gemm(const Matrix *A, const Matrix *B,
     Matrix *result = matrix_create_nd(out_len, out_shape, out);
     if (!result) return NULL;
     
-    /* Iterate and contract */
+    /* Manual iteration and contraction */
     int A_idx[26], B_idx[26], out_idx[26];
     memset(A_idx, 0, sizeof(A_idx));
     memset(B_idx, 0, sizeof(B_idx));
@@ -695,7 +690,7 @@ static Matrix* handle_gemm(const Matrix *A, const Matrix *B,
         }
         
         double sum = 0.0;
-        for (int c = 0; c < contract_size; c++) {
+        for (int c = 0; c < k; c++) {
             A_idx[contract_pos_A] = c;
             B_idx[contract_pos_B] = c;
             double a_val = matrix_get_nd(A, A_idx);
