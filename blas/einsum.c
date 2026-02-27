@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#include <cblas.h>
 
 /* ===== TYPE DEFINITIONS ===== */
 
@@ -294,18 +295,12 @@ static BLASAnalysis analyze_blas_pattern(const char *notation,
 
 static double blas_dot(const double *x, int n, int incx,
                        const double *y, int incy) {
-    double result = 0.0;
-    for (int i = 0; i < n; i++) {
-        result += x[i * incx] * y[i * incy];
-    }
-    return result;
+    return cblas_ddot(n, x, incx, y, incy);
 }
 
 static void blas_axpy(int n, double alpha, const double *x, int incx,
                       double *y, int incy) {
-    for (int i = 0; i < n; i++) {
-        y[i * incy] += alpha * x[i * incx];
-    }
+    cblas_daxpy(n, alpha, x, incx, y, incy);
 }
 
 
@@ -314,53 +309,24 @@ static void blas_ger(int m, int n, double alpha,
                      const double *x, int incx,
                      const double *y, int incy,
                      double *A, int ldA) {
-    for (int i = 0; i < m; i++) {
-        for (int j = 0; j < n; j++) {
-            A[i * ldA + j] += alpha * x[i * incx] * y[j * incy];
-        }
-    }
+    cblas_dger(CblasRowMajor, m, n, alpha, x, incx, y, incy, A, ldA);
 }
 
 static void blas_gemv(char trans, int m, int n, double alpha,
                       const double *A, int ldA,
                       const double *x, int incx, double beta,
                       double *y, int incy) {
-    if (trans == 'N') {
-        for (int i = 0; i < m; i++) {
-            double sum = 0.0;
-            for (int j = 0; j < n; j++) {
-                sum += A[i * ldA + j] * x[j * incx];
-            }
-            y[i * incy] = alpha * sum + beta * y[i * incy];
-        }
-    } else {
-        for (int j = 0; j < n; j++) {
-            double sum = 0.0;
-            for (int i = 0; i < m; i++) {
-                sum += A[i * ldA + j] * x[i * incx];
-            }
-            y[j * incy] = alpha * sum + beta * y[j * incy];
-        }
-    }
+    CBLAS_TRANSPOSE trans_flag = (trans == 'T') ? CblasTrans : CblasNoTrans;
+    cblas_dgemv(CblasRowMajor, trans_flag, m, n, alpha, A, ldA, x, incx, beta, y, incy);
 }
-
-
 
 static void blas_gemm(char transA, char transB, int m, int n, int k,
                       double alpha, const double *A, int ldA,
                       const double *B, int ldB, double beta,
                       double *C, int ldC) {
-    if (transA == 'N' && transB == 'N') {
-        for (int i = 0; i < m; i++) {
-            for (int j = 0; j < n; j++) {
-                double sum = 0.0;
-                for (int kk = 0; kk < k; kk++) {
-                    sum += A[i * ldA + kk] * B[kk * ldB + j];
-                }
-                C[i * ldC + j] = alpha * sum + beta * C[i * ldC + j];
-            }
-        }
-    }
+    CBLAS_TRANSPOSE trans_A = (transA == 'T') ? CblasTrans : CblasNoTrans;
+    CBLAS_TRANSPOSE trans_B = (transB == 'T') ? CblasTrans : CblasNoTrans;
+    cblas_dgemm(CblasRowMajor, trans_A, trans_B, m, n, k, alpha, A, ldA, B, ldB, beta, C, ldC);
 }
 
 
@@ -427,7 +393,19 @@ static Matrix* handle_ger(const Matrix *A, const Matrix *B,
                           const char *in1, const char *in2, const char *out) {
     /* GER: outer product without shared indices (e.g., "i,j->ij", "ij,k->ijk") */
     
-    /* Build output shape by mapping indices to dimensions */
+    /* For true outer product (both 1D), use BLAS */
+    if (A->ndim == 1 && B->ndim == 1) {
+        int m = A->shape[0];
+        int n = B->shape[0];
+        int out_shape[2] = {m, n};
+        Matrix *result = matrix_create_nd(2, out_shape, out);
+        if (!result) return NULL;
+        
+        blas_ger(m, n, 1.0, A->data, 1, B->data, 1, result->data, n);
+        return result;
+    }
+    
+    /* For higher-dimensional tensors, build output shape by mapping indices to dimensions */
     int out_shape[26];
     int out_len = (int)strlen(out);
     
@@ -495,6 +473,23 @@ static Matrix* handle_gemv(const Matrix *A, const Matrix *B,
                            const char *in1, const char *in2, const char *out) {
     /* GEMV: contract one index (e.g., "ij,j->i", "ijk,k->ij") */
     
+    /* For true 2D × 1D or 1D × 2D operations, use BLAS directly */
+    if ((A->ndim == 2 && B->ndim == 1) || (A->ndim == 1 && B->ndim == 2)) {
+        const Matrix *mat = (A->ndim == 2) ? A : B;
+        const double *vec = (A->ndim == 2) ? B->data : A->data;
+        int m = mat->shape[0];
+        int n = mat->shape[1];
+        
+        int result_shape[1] = {(A->ndim == 2) ? m : n};
+        Matrix *result = matrix_create_nd(1, result_shape, out);
+        if (!result) return NULL;
+        
+        char trans = (A->ndim == 1) ? 'T' : 'N';
+        blas_gemv(trans, m, n, 1.0, mat->data, n, vec, 1, 0.0, result->data, 1);
+        return result;
+    }
+    
+    /* For higher-dimensional tensors, use manual iteration */
     /* Find the contraction index */
     char contract_idx = 0;
     for (int i = 0; i < (int)strlen(in1); i++) {
@@ -599,6 +594,24 @@ static Matrix* handle_gemm(const Matrix *A, const Matrix *B,
                            const char *in1, const char *in2, const char *out) {
     /* GEMM: contract one index with multiple free indices (e.g., "ij,jk->ik", "ijk,kjl->ijl") */
     
+    /* For true 2D × 2D matrix multiply, use BLAS directly */
+    if (A->ndim == 2 && B->ndim == 2 && 
+        in1[1] == in2[0] && in1[0] == out[0] && in2[1] == out[1]) {
+        int m = A->shape[0];
+        int n = B->shape[1];
+        int k = A->shape[1];
+        
+        if (B->shape[0] != k) return NULL;
+        
+        int out_shape[2] = {m, n};
+        Matrix *result = matrix_create_nd(2, out_shape, out);
+        if (!result) return NULL;
+        
+        blas_gemm('N', 'N', m, n, k, 1.0, A->data, k, B->data, n, 0.0, result->data, n);
+        return result;
+    }
+    
+    /* For higher-dimensional tensors or more complex patterns, use manual iteration */
     /* Find the contraction index */
     char contract_idx = 0;
     for (int i = 0; i < (int)strlen(in1); i++) {
