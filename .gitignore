@@ -8,6 +8,12 @@
 !*.c
 !.gitignore
 
+# Track thesis directory
+!thesis/
+thesis/**
+!thesis/**.tex
+!thesis/**.pdf
+
 # Explicitly ignore common editor and build artifacts (redundant with `*` but explicit for clarity)
 .vscode/
 *.o
