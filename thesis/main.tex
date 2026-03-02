@@ -42,36 +42,42 @@
 \begin{abstract}
 	This work explores the different possible implementation of the Einstein sum, a mathematical notation used in many fields of science, such as physics and engineering, to represent the summation of products of tensors. The Einstein sum is a powerful tool for simplifying complex mathematical expressions and can be used to derive important results in various fields. In this work, we will discuss the different ways to implement the Einstein sum, including its use in tensor calculus. We will also explore the advantages and disadvantages of each implementation.
 \end{abstract}
+
 \tableofcontents
 
 \mainmatter
+
 \chapter{Introduction to Einstein Summation and Tensor Calculus}
 
+% NOTE(Diego): titolo molto pomposo, soprattutto perché di questa "natura dei tensori" non ne parli mai
 \section{The Nature of Tensors and the Einstein Convention}
 
+% NOTE(Diego): Allora per quanto poetica come frase non direi che i tensori sono all'intersezione di questi tre campi siccome sono usati in in modo molto diverso nei tre campi e in informatica sono più che altro "array multidimensionali" senza proprietà interessanti a differenza dei corrispettivi matematici e fisici. Puoi dire che tutti e tre hanno bisogno di oggetti con più indici e farci le contrazioni ma non molto altro in comune (putroppo).
 At the intersection of mathematics, physics, and computer science lies the concept of the \textbf{Tensor}. In its simplest form, a tensor is a multi-dimensional array of numerical values. While a scalar is a 0-order tensor, a vector is a 1st-order tensor, and a matrix is a 2nd-order tensor, the abstraction extends infinitely to $N$-th order tensors.
 
 In the physical world—specifically in architectural engineering and structural analysis—tensors represent physical quantities that are independent of any specific coordinate system. For example, the stress tensor $\sigma_{ij}$ describes the internal forces within a solid body. To calculate the interaction between these multi-dimensional objects, we require a robust notation: the \textbf{Einstein Summation Convention}.
 
-
-
+% NOTE(Diego): serve la citazione.
 Introduced by Albert Einstein in 1916, the convention simplifies tensor algebra by removing the explicit summation symbol ($\sum$). The rule is as follows: \textit{whenever an index variable appears twice in a single term, it implies a summation over the entire range of that index.}
 
 Consider the transformation of a vector $v$ by a matrix $M$:
 \begin{equation}
 	y_i = \sum_{j=1}^{n} M_{ij} v_j \quad \longrightarrow \quad y_i = M_{ij} v_j
 \end{equation}
+% NOTE(Diego): molto generative pretrained transformer questa frase (i.e. mi sembra un po' vuota)
 This shorthand does not merely save space; it highlights the \textbf{contraction}—the process of reducing the dimensionality of the system by "contracting" shared indices.
 
 \section{Einsum in the Architecture of Neural Networks}
 
+% NOTE(Diego): tensore (oggetto matematico con indici) != tensore (o NDArray) struttura dati, perché ci sono varie strutture dati che si possono usare per rappressentare i tensori (e.g. quella che usa NumPy, quella che usa PyTorch ecc...)
+% NOTE(Diego): non tutte le operazioni in una rete sono contrazioni tensoriali, pensa alle banali attivazioni o la convoluzione che richiede una estensione al formalismo che hai introdotto prima.
 In the modern computational landscape, tensors are the primary data structure for \textbf{Deep Learning}. Every operation in a neural network—from simple linear layers to complex attention mechanisms—is fundamentally a tensor contraction.
 
 \subsection{Linear Layers and Batch Processing}
 
+% NOTE(Diego): "most foundamental" è un termine molto forte, per quanto in linea di principio è anche vero non è molto accademico e, a meno che, non lo sostieni con dell'evidenza o un trattamento matematico più rigorioso eviterei questi termini.
+% NOTE(Diego): Il numero di punti processati dimende da quello che stai facendo, per esempio se vuoi fare inferenza in tempo reale su un telefono la cosa più importante è la latenza e là si che ci interessa solo processare solo un punto. Il discorso che fai vale solo per l'addestramento.
 In modern deep learning, a Linear Layer is the most fundamental transformation. Mathematically, it represents an affine transformation of the input data. However, in a production environment, we rarely process a single data point at a time. Instead, we utilize \textbf{Batch Processing}, where multiple inputs are grouped into a single higher-order tensor to exploit the parallel processing power of GPUs.
-
-
 
 Consider a weight matrix $W$ with dimensions $(I, O)$, where $I$ is the number of input features and $O$ is the number of output features. If we process a single vector $x$ of size $I$, the operation is a standard matrix-vector product. However, with a batch size $B$, our input becomes a 2D tensor $X \in \mathbb{R}^{B \times I}$.
 
@@ -81,19 +87,19 @@ Using the \texttt{einsum} notation, the operation is expressed as:
 \end{equation}
 
 This specific notation provides several computational advantages:
+% NOTE(Diego): se devi fare una cosa del genere usa l'ambiente description
 \begin{itemize}
 	\item \textbf{Feature Mapping:} The index $i$ is the "contraction dimension." It represents the internal connection where each input feature is weighted and summed to contribute to an output feature.
 	\item \textbf{Batch Preservation:} The index $b$ is a "broadcast index." It remains untouched by the summation, meaning the same weights $W$ are applied identically to every sample in the batch.
 	\item \textbf{Parallelism:} By representing the batch as a tensor dimension, the underlying \texttt{einsum} engine can dispatch the entire operation as a single \texttt{GEMM} (General Matrix Multiply) call.
 \end{itemize}
 
-
-
+% NOTE(Diego): "does not define the math" è una frase che può andare bene in un contesto colloquiale ma accademicamente la matematica è un intero campo a parte è meglio se usi il termine calculations o operations
 Without the batch dimension, the hardware would have to launch $B$ separate, smaller kernels, leading to significant overhead and under-utilization of the high-speed memory bus. Thus, the Einstein notation does not just describe the math; it defines the \textbf{memory access pattern} that makes large-scale neural network training feasible.
 
-
-
 \subsection{The Transformer and Multi-Head Attention}
+
+% NOTE(Diego): Sì ok ma se vuoi fare questo esempio devi contestualizzarlo molto meglio.
 One of the most significant uses of \texttt{einsum} today is in the Transformer architecture. These models utilize 4-dimensional tensors to represent batches, sequence lengths, attention heads, and feature dimensions. A typical attention score calculation involves:
 \begin{equation}
 	\text{Score}_{btsh} = Q_{bthd} K_{bshd}
@@ -102,57 +108,55 @@ Expressing this as a sequence of standard matrix multiplications would require m
 
 \section{Broader Applications: From Fluids to Architecture}
 
+% NOTE(Diego): vedi sopra, fai qualche esempio di formula, così mi stai dicendo qualcosa di cui il lettore si deve fidare senza fonti.
 The utility of \texttt{einsum} extends far beyond artificial intelligence. In \textbf{Continuum Mechanics}, the convention is used to describe the deformation of materials. In an architectural project the Einstein sum can be used to model elasticity tensors that describe how the building's concrete perimeter reacts to thermal expansion. In \textbf{Fluid Dynamics}, it can model wind pressure around the central courtyard public spaces using the Navier-Stokes equations in tensor form.
 
-
+% NOTE(Diego): s/Low-Level Execution/Implementation/ un'altro termine valido è Algorithm
 \section{From Mathematical Notation to Low-Level Execution}
 
+% NOTE(Diego): La frase è molto più pomposa di quanto è necessario, innanzitutto cos'è una stringa simbolica e cosa una non? Poi sul fatto che sia un problema ingegnieristico complesso non mi sentirei di dillo, puoi dire che non è un problema banale.
 The translation of a symbolic string like \texttt{"ij,jk->ik"} into machine code is a complex engineering task. The implementation must bridge the gap between high-level logic and \textbf{Low-Level Stride Arithmetic}.
 
 \subsection{The Compilation Pipeline}
+
 When a user calls an \texttt{einsum} function, the system undergoes several stages of translation:
+% NOTE(Diego): usa ambiente description (vedi sopra)
 \begin{enumerate}
 	\item \textbf{Parsing:} The string is analyzed to create bitmasks representing index occupancy.
 	\item \textbf{Contraction Mapping:} The engine identifies which indices are shared (summation) and which are unique (free).
 	\item \textbf{Memory Stride Calculation:} To access data in a flat memory buffer, the engine calculates the \textit{stride}—the number of elements to skip to reach the next index in a given dimension.
 \end{enumerate}
 
-
-
 \subsection{Execution Strategies and Algorithmic Diversity}
 
+% NOTE(Diego): che vuol dire "universal" in un testo accademico è bene non usare termini, aggettivi o avverbi senza definirli prima. Adesso io capisco che tu probabilmente intendi che possa prendere una qualunque stringa nel linguaggio che descrive le una sommatoria nella convezione di Einstein e la esegua in modo efficiente, però in generale devi definirlo prima.
 The implementation of a universal \texttt{einsum} engine requires a multi-tiered execution strategy. Because the Einstein notation is so expressive, no single algorithm can handle every case with peak efficiency. Instead, we present different implementations that fit different use cases, strarting with a general unoptimized algorithm and moving towards better performing options.
 
-\begin{enumerate}
+\begin{enumerate} % NOTE(Diego): ambiente description
+	% NOTE(Diego): cosa vuol dire odometer in questo contesto?
 	\item \textbf{Generalized Odometer Interpretation:}
 	      The most flexible approach is the Odometer-based iteration. This strategy treats the $N$-dimensional space as a single flat counter. It identifies every unique index in the notation (both free and summed) and builds a virtual "odometer" where each gear corresponds to a dimension size.
 
-
-
+		% NOTE(Diego): cos'è il rango di un tensore?
 	      While this method is capable of handling arbitrary rank-N tensors without pre-compilation, it is limited by the overhead of coordinate-to-offset calculations performed inside the innermost loop. It serves as a study for the genuine implementation of the algorithm that is capable of handling any tensor.
 
 	\item \textbf{JIT-Code Generation and Specialization:}
 	      Another possible strategy is \textbf{Just-In-Time (JIT)} compilation. Instead of calling a library, the engine generates a raw C or C++ source file containing the exact nested loops required for the specific tensor shapes at hand.
 
-
-
 	      By hardcoding the loop bounds and strides, the system allows the compiler to perform aggressive optimizations like \textbf{SIMD vectorization} and \textbf{Loop Unrolling}. This eliminates the "index lookup" overhead entirely, creating a zero-overhead kernel specialized for a single mathematical task.
 	\item \textbf{Canonical Permutation and Flattening:}
 	      By using a \textbf{Permute-Flatten} strategy we can treat the operation as a \textbf{matrix multiplication}. This involves reordering the axes of the input tensors so that the summation indices are grouped contiguously.
-
-
 
 	      Once the data is rearranged, the multidimensional tensor is "flattened" into a 2D matrix view. This allows the system to treat a 4D or 6D contraction as a simple 2D \texttt{GEMM} operation, drastically reducing the complexity from $O(d^n)$ to $O(M \cdot K \cdot N)$, where $M, K, N$ are the products of the respective dimension groups.
 
 	\item \textbf{BLAS Pattern Dispatching:}
 	      When treating 1D or 2D patterns (such as Dot, GER, or GEMV), the best solution is to route the data to \textbf{Basic Linear Algebra Subprograms (BLAS)}. These are hardware-vendor-tuned kernels (like Intel MKL or Apple Accelerate) that use sophisticated cache-blocking and tiling techniques.
 
-
-
 	      By utilizing BLAS, we ensure that standard operations achieve the peak theoretical FLOPS (Floating Point Operations Per Second) of the host CPU or GPU.
 
 \end{enumerate}
 
+% NOTE(Diego): indecidibilità è un termine già preso da un'altro campo dell'informatica e usarlo crea una certa aspettativa nel lettore. Il fatto che esestano dei casi in cui la sintassi è ambigua con solo due operandi invece che tre è una cosa normale che è bene far notare ma nulla che meriti una intera sezione con un titolo così pomposo.
 \section{Undecidability and the Necessity of Explicit Indices}
 
 A core theoretical problem in tensor computing is the ambiguity that arises without \textbf{Explicit Indexing}. In a coordinate-free notation, an expression like $A \otimes B$ is ambiguous.
@@ -160,16 +164,20 @@ A core theoretical problem in tensor computing is the ambiguity that arises with
 \subsection{The State Space of Contractions}
 Given two 3rd-order tensors, there are dozens of ways they could interact. Without explicit indices (e.g., \texttt{"ijk,klm"}), a computer cannot decide which dimensions should be summed and what the final dimension should be.
 
-
-
 \subsection{Resolving Ambiguity}
+
 Explicit indices serve as a \textbf{Schema}. They resolve the "Undecidability Problem" by providing a strict map of the data topology. Without this metadata, the engine would have to guess the user's intent, leading to non-deterministic results.
+
 \section{Conclusion}
+
+% NOTE(Diego): "the cornerstone of modern engineering" peso hai già capito dove sia il problema...
 This work seeks to demonstrate that while the Einstein sum was invented as a simple way to express tensor contractions, its efficient implementation is the cornerstone of modern engineering. Whether we are optimizing a neural network or designing the structural perimeter of an architectural complex, the ability to rapidly contract tensors is what enables us to simplify complex computations in vast contextes.
 
 By exploring these implementations, this work aims to provide a clear roadmap for building efficient tensor libraries and to contribute to the broader field of computational tensor calculus.
+
 \chapter{Implementations of the Einstein sum}
 \label{chap:Implementations}
+
 \noindent This chapter presents the different implementations of the Einstein sum.
 \section{Generalized Tensor Contraction via Odometer Iteration}
 
