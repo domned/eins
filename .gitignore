@@ -13,7 +13,6 @@
 # Track thesis directory
 !thesis/images/**.pdf
 !thesis/
-thesis/**
 !thesis/**.tex
 !thesis/**.pdf
 
