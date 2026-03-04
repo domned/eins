@@ -359,7 +359,7 @@ The implementation utilizes a hierarchy of functions, prioritizing specialized k
 
 	\item \textbf{Level-3 Operations (Matrix-Matrix):}
 	      \begin{description}
-		      \item [GEMM:] The most critical kernel, matching \texttt{"ij,jk->ik"}. This represents the gold standard of optimization, where $O(n^3)$ operations are performed on $O(n^2)$ data, allowing for maximum data reuse.
+		      \item [GEMM:] The most critical kernel, matching \texttt{"ij,jk->ik"}.
 	      \end{description}
 \end{enumerate}
 
@@ -384,14 +384,14 @@ The system analyzes the input notation using bitwise masks and dimension counts 
 \end{table}
 
 \subsection{Future Work: Stride-Based Optimization}
-A unique feature of this implementation is the theoretical groundwork for \textbf{Stride-Based Patterns}. While the current version handles unit strides, standard BLAS functions accept an \texttt{incx} parameter.
+This implementation can be a theoretical groundwork for \textbf{Stride-Based Patterns}. While the current version handles unit strides, standard BLAS functions accept an \texttt{incx} parameter.
 
 
 
 In future iterations, this would allow the system to handle complex patterns like \texttt{"ii->"} (Matrix Trace) or \texttt{"xii,xii->"} (Diagonal Dot Product) without moving data. By calculating a custom stride based on the tensor shape, the engine could traverse diagonal elements as if they were a contiguous vector, further reducing the need for temporary memory allocations or tensor permutations.
 
 \subsection{Summary of the BLAS Engine}
-This approach transforms Einstein notation from a mathematical abstraction into a sequence of high-performance library calls. By identifying the most specific ``building block'' for a given operation, the engine ensures that simple operations remain fast while complex matrix multiplications reach the peak theoretical performance of the hardware.
+This approach allows us to leverage the BLAS library. By identifying the most specific ``building block'' for a given operation, we ensure that simple operations remain fast while complex matrix multiplications still take advantage of the optimized BLAS routines.
 \bibliographystyle{plain}
 \bibliography{bibliography}
 \end{document}
