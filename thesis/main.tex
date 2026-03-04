@@ -279,7 +279,7 @@ The generator utilizes three primary optimization strategies: \textbf{Literal St
 This approach treats Einstein notation as a high-level language. By moving the computational burden from the runtime environment to the \textbf{Compilation Phase}, it minimizes logic overhead and memory latency, making it adapt for production environments where tensor shapes are known in advance.
 \section{Canonical Contraction through Permutation and Flattening}
 
-This implementation introduces a transformation designed to bridge the gap between abstract tensor notation and high-performance linear algebra. Rather than iterating through a high-dimensional space with a generalized odometer, this approach transforms any arbitrary $N$-dimensional Einstein summation into a standard 2D matrix multiplication ($C = A \times B$).
+This implementation introduces a transformation designed to bridge the gap between abstract tensor notation and linear algebra. Rather than iterating through a high-dimensional space with a generalized odometer, this approach transforms any arbitrary $N$-dimensional Einstein summation into a standard 2D matrix multiplication ($C = A \times B$).
 
 By reducing the problem to a canonical matrix form, the system can leverage optimized hardware routines while maintaining the flexibility to handle complex tensor geometries.
 

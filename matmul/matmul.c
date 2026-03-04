@@ -1,56 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <cblas.h>
 #include "../einsum.h"
 
-// Creates a new matrix with dimensions permuted according to `order`
-// e.g. order = {1, 0} swaps rows and columns (transpose)
-Matrix* matrix_permute(const Matrix *src, const int *order) {
-    if (!src || !order) return NULL;
-    
-    // Create the new shape
-    int *new_shape = (int*)malloc(sizeof(int) * src->ndim);
-    for (int i = 0; i < src->ndim; i++) {
-        new_shape[i] = src->shape[order[i]];
-    }
-    
-    // We cannot construct the "indices" bitmap easily here without the original string, 
-    // but for the math logic, we just need shape and data. 
-    // Passing "per" as dummy string.
-    Matrix *dst = matrix_create_nd(src->ndim, new_shape, "per");
-    free(new_shape);
+// matrix_permute is defined in blas/einsum.c
+extern Matrix* matrix_permute(const Matrix *src, const int *order);
 
-    // Copy data to new layout
-    // We iterate through the DESTINATION linearly to keep writes contiguous,
-    // and calculate the SOURCE index for each read.
-    size_t total_elements = 1;
-    for (int i = 0; i < src->ndim; i++) total_elements *= src->shape[i];
-
-    int *coords = (int*)calloc(src->ndim, sizeof(int)); // coordinates in DST
-    int *src_coords = (int*)malloc(sizeof(int) * src->ndim);
-
-    for (size_t i = 0; i < total_elements; i++) {
-        // Map dst coordinates to src coordinates using the inverse of `order`
-        // If dst dim [0] came from src dim [order[0]], then src coordinate at [order[0]] is coords[0]
-        for (int d = 0; d < src->ndim; d++) {
-            src_coords[order[d]] = coords[d];
-        }
-
-        double val = matrix_get_nd(src, src_coords); //
-        dst->data[i] = val; // Linear write
-
-        // Increment odometer for dst (coords)
-        for (int d = src->ndim - 1; d >= 0; d--) {
-            coords[d]++;
-            if (coords[d] < dst->shape[d]) break;
-            coords[d] = 0;
-        }
-    }
-
-    free(coords);
-    free(src_coords);
-    return dst;
-}
 
 
 Matrix* einsum_matmul(const char *notation, const Matrix *A, const Matrix *B) {
@@ -137,15 +93,21 @@ Matrix* einsum_matmul(const char *notation, const Matrix *A, const Matrix *B) {
     // C_flat will be (rows_A x cols_B)
     double *C_data = (double*)calloc(rows_A * cols_B, sizeof(double));
 
-    for (int i = 0; i < rows_A; i++) {
-        for (int k = 0; k < cols_A_sum; k++) {
-            double a_val = permutedA->data[i * cols_A_sum + k];
-            for (int j = 0; j < cols_B; j++) {
-                double b_val = permutedB->data[k * cols_B + j];
-                C_data[i * cols_B + j] += a_val * b_val;
-            }
-        }
-    }
+    // Use BLAS for efficient matrix multiplication
+    cblas_dgemm(CblasRowMajor,           // Row-major storage
+                CblasNoTrans,             // No transpose on A
+                CblasNoTrans,             // No transpose on B
+                rows_A,                   // Number of rows in A and C
+                cols_B,                   // Number of columns in B and C
+                cols_A_sum,               // Number of columns in A / rows in B
+                1.0,                      // alpha scaling factor
+                permutedA->data,          // Matrix A
+                cols_A_sum,               // Leading dimension of A
+                permutedB->data,          // Matrix B
+                cols_B,                   // Leading dimension of B
+                0.0,                      // beta scaling factor (0 since C is zero-initialized)
+                C_data,                   // Result matrix C
+                cols_B);                  // Leading dimension of C
 
     // Cleanup permuted temporaries
     matrix_free(permutedA);
