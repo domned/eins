@@ -600,8 +600,7 @@ static Matrix* handle_gemv(const Matrix *A, const Matrix *B,
 
 static Matrix* handle_gemm(const Matrix *A, const Matrix *B, 
                            const char *in1, const char *in2, const char *out) {
-    /* GEMM: contract one index with multiple free indices using BLAS via permutation */
-    
+        
     /* Find the contraction index */
     char contract_idx = 0;
     for (int i = 0; i < (int)strlen(in1); i++) {
