@@ -396,23 +396,15 @@ We use Python's NumPy library (version 1.21.0) as a reference point. While direc
 
 The performance analysis focuses on three representative tensor contraction patterns, each chosen to expose different algorithmic characteristics. Three different tensor sizes are chosen to observe how cache interactions affect performance at different scales (data fitting in L1 cache, L2 cache, and main memory), validating the concepts introduced in Section~\ref{sec:memory_layout}.
 
-\begin{description}
-	\item [Matrix multiplication ($\texttt{ij,jk->ik}$)]
-	      \begin{description}
-		      \item [Rationale:] This test case was chosen because it is the simplest and most common operation that can be expressed in Einstein notation.
-		      \item [Why multiple sizes:] We test three sizes to see how implementations behave at different scales:
-		            \begin{description}
-			            \item [(10, 10)] Data fits in fast L1 cache.
-			            \item [(50, 50)] Data partially in L2 cache.
-			            \item [(100, 100)] Data too large for cache.
-		            \end{description}
-	      \end{description}
 
-	\item [3D Tensor Contraction ($\texttt{abc,cd->abd}$)]
-	      \begin{description}
-		      \item [Rationale:] This operation represents a higher-rank contraction that does not trivially map to standard BLAS operations. It tests whether our implementations correctly handle rank-3 tensors and whether the Permute-Flatten strategy successfully reduces it to matrix multiplication.
-	      \end{description}
+\textbf{Matrix multiplication} ($\texttt{ij,jk->ik}$) This test case was chosen because it is the simplest and most common operation that can be expressed in Einstein notation. We tested three sizes to see how implementations behave at different scales:
+\begin{description}
+	\item [(10, 10)] Data fits in fast L1 cache.
+	\item [(50, 50)] Data partially in L2 cache.
+	\item [(100, 100)] Data too large for cache.
 \end{description}
+
+\textbf{3D Tensor Contraction} ($\texttt{abc,cd->abd}$) This operation represents a higher-rank contraction that does not trivially map to standard BLAS operations. It tests whether our implementations correctly handle rank-3 tensors and whether the Permute-Flatten strategy successfully reduces it to matrix multiplication.
 
 \section{Statistical modeling of execution times}
 
@@ -448,46 +440,32 @@ Before analyzing the results, it is important to define \textbf{algorithmic over
 
 \subsubsection{Small Problems (10×10): Overhead Dominates}
 
-For $(10, 10) \times (10, 10)$ matrices (200 floating-point multiplications total), all implementations complete in sub-microsecond times. At this scale, algorithmic overhead is the main source of latency:
+For $(10, 10) \times (10, 10)$ matrices (200 floating-point multiplications total), all implementations complete in sub-microsecond times. At this scale, algorithmic overhead is the main source of latency.
+\textbf {Odometer} exhibits measurable latency even for the trivial $10 \times 10$ case, because it must iterate through the combined space and perform dynamic index arithmetic on each step. For a $10 \times 10 \times 10$ iteration space, this means 1,000 coordinate-to-offset calculations.
+\textbf {CodeGen} shows significant improvement because loop bounds are hardcoded, allowing the compiler to eliminate bounds-checking and inline the stride arithmetic as literal constants. The generated C code, when compiled with \texttt{-O3}, allows the compiler to unroll loops.
+\textbf {Permute-Flatten} shows overhead from data permutation operations. While the subsequent GEMM is fast, the permutation timings are noticeable for small tensors where computation time itself is negligible.
+\textbf {BLAS} OpenBLAS detects the small problem size and dispatches to a highly-tuned small-matrix kernel with minimal overhead, it's increase in performance in respect to the permute flatten approach is due to how it handles data stored in the cache instead of main memory as described in \cite{DONGARRA2017495}.
 
-\begin{description}
-	\item [Odometer] exhibits measurable latency even for the trivial $10 \times 10$ case, because it must iterate through the combined space and perform dynamic index arithmetic on each step. For a $10 \times 10 \times 10$ iteration space, this means 1,000 coordinate-to-offset calculations.
-
-	\item [CodeGen] shows significant improvement because loop bounds are hardcoded, allowing the compiler to eliminate bounds-checking and inline the stride arithmetic as literal constants. The generated C code, when compiled with \texttt{-O3}, allows the compiler to unroll loops.
-	\item [Permute-Flatten] shows overhead from data permutation operations. While the subsequent GEMM is fast, the permutation timings are noticeable for small tensors where computation time itself is negligible.
-
-	\item [BLAS] OpenBLAS detects the small problem size and dispatches to a highly-tuned small-matrix kernel with minimal overhead, it's increase in performance in respect to the permute flatten approach is due to how it handles data stored in the cache instead of main memory as described in \cite{DONGARRA2017495}.
-\end{description}
 
 \textbf{Key insight:} At this scale call overhead and memory allocation cost are the main tasks in execution time. CodeGen and BLAS are preferred because they reduce this overhead.
 
 \subsubsection{Medium problems (50×50)}
 
-At $(50, 50) \times (50, 50)$ (125,000 operations) the working set (3 matrices × $50^2 \times 8$ bytes = 60 KB) exceeds the per-core L1 cache (32 KB) but remains within L2 cache (256 KB):
+At $(50, 50) \times (50, 50)$ (125,000 operations) the working set (3 matrices × $50^2 \times 8$ bytes = 60 KB) exceeds the per-core L1 cache (32 KB) but remains within L2 cache (256 KB). \textbf {Odometer} 125,000 loop iterations accumulate significant overhead. Each iteration requires index coordinate calculations and memory address arithmetic, summing up to a relevant latency.
+\textbf {CodeGen} shows strong improvement over Odometer, with the hardcoded loop structure allowing compiler optimizations. The compiler's ability to unroll the inner loop and maintain data in registers significantly improves temporal locality.
+\textbf {Permute-Flatten} becomes competitive with CodeGen, as the BLAS GEMM operation's efficiency grows with problem size. The overhead of permutation is amortized over computation.
+\textbf {BLAS} remains marginally faster than Permute-Flatten. This is because BLAS is optimized for cache efficiency, and the $50 \times 50$ case is large enough to benefit from its blocking strategies.
 
-\begin{description}
-	\item [Odometer] 125,000 loop iterations accumulate significant overhead. Each iteration requires index coordinate calculations and memory address arithmetic, summing up to a relevant latency.
-
-	\item [CodeGen] shows strong improvement over Odometer, with the hardcoded loop structure allowing compiler optimizations. The compiler's ability to unroll the inner loop and maintain data in registers significantly improves temporal locality.
-
-	\item [Permute-Flatten] becomes competitive with CodeGen, as the BLAS GEMM operation's efficiency grows with problem size. The overhead of permutation is amortized over more useful computation.
-	\item [BLAS] remains marginally faster than Permute-Flatten. This is because BLAS is optimized for cache efficiency, and the $50 \times 50$ case is large enough to benefit from its blocking strategies.
-\end{description}
 \textbf{Key insight:} The 50×50 dimensions shows how the data access pattern affects performance. CodeGen's compiler-generated code and BLAS's hand-tuned kernels both exploit vectorization and cache locality that our generic iteration strategy cannot match.
 
 \subsubsection{Large Problems (100×100): Memory Hierarchy Matters}
 
 For $(100, 100) \times (100, 100)$ (1 million operations), the working set (3 matrices × $100^2 \times 8$ bytes = 240 KB) exceeds the per-core L2 cache and heavily contests the shared L3 cache (16 MB total, shared among 8 cores).
+\textbf {Odometer} execution time becomes prohibitive, as 1 million dynamic index calculations represent 1 million CPU cycles that could be spent on arithmetic.
+\textbf {CodeGen} shows good scaling. The compiler's loop unrolling and prefetcher-friendly access patterns help maintain reasonable performance. However, without explicit cache-blocking (as would require language intrinsics or inline assembly), the generic loop structure still causes memory traffic inefficiency.
+\textbf {BLAS} employs sophisticated cache-blocking strategies to optimize memory utilization during the $100 \times 100 \times 100$ GEMM computation. The algorithm partitions the matrix multiplication into rectangular blocks (e.g., $60 \times 60 \times 320$) that fit entirely within fast L2 cache.
+\textbf {Permute-Flatten} shows slower performance than direct BLAS because the intermediate permutation operations create additional memory traffic and require temporary buffer allocation.
 
-\begin{description}
-	\item [Odometer] execution time becomes prohibitive, as 1 million dynamic index calculations represent 1 million CPU cycles that could be spent on arithmetic.
-
-	\item [CodeGen] shows good scaling. The compiler's loop unrolling and prefetcher-friendly access patterns help maintain reasonable performance. However, without explicit cache-blocking (as would require language intrinsics or inline assembly), the generic loop structure still causes memory traffic inefficiency.
-
-	\item [BLAS] employs sophisticated cache-blocking strategies to optimize memory utilization during the $100 \times 100 \times 100$ GEMM computation. The algorithm partitions the matrix multiplication into rectangular blocks (e.g., $60 \times 60 \times 320$) that fit entirely within fast L2 cache.
-
-	\item [Permute-Flatten] shows slower performance than direct BLAS because the intermediate permutation operations create additional memory traffic and require temporary buffer allocation.
-\end{description}
 
 \textbf{Key insight:} At large scales, the BLAS approach's becomes sensibly better then on smaller datasets while the codegen approach remains competitive. The Odometer approach becomes impractical due to its overhead, while the Permute-Flatten approach suffers from additional memory traffic and temporary buffer allocation.
 
@@ -495,23 +473,20 @@ For $(100, 100) \times (100, 100)$ (1 million operations), the working set (3 ma
 
 The 3D contraction test ($\texttt{abc,cd->abd}$ with shapes $(10, 10, 10) \times (10, 10)$) shows how the implementations handle non-standard tensor patterns. This operation does not map naturally to BLAS Level-2 or Level-3 operations, making it a test of the permute-based reduction strategy.
 
-All implementations produce numerically identical results, but performance varies:
-\begin{description}
-	\item [Odometer] handles the operation with no special logic, iterating through the combined space.
-
-	\item [CodeGen] generates custom nested loops, specializing entirely to this specific contraction pattern. The loop structure is:
-	      \begin{lstlisting}
+All implementations produce numerically identical results, but performance varies.
+\textbf{Odometer} handles the operation with no special logic, iterating through the combined space.
+\textbf{CodeGen} generates custom nested loops, specializing entirely to this specific contraction pattern. The loop structure is:
+\begin{lstlisting}
 for i = 0 to 10
     for j = 0 to 10
         for l = 0 to 10
             C[i,j,l] += sum_k A[i,j,k] * B[k,l]
 	      \end{lstlisting}
-	      This structure exhibits good cache locality: the innermost loop over $k$ accesses $B$ contiguously along its second dimension.
+This structure exhibits good cache locality: the innermost loop over $k$ accesses $B$ contiguously along its second dimension.
 
-	\item [Permute-Flatten] groups indices to form a $(100 \times 10)$ matrix (the permuted and flattened $A$) and a $(10 \times 10)$ matrix ($B$), reducing the operation to GEMM. The reshaping step introduces overhead, but the subsequent matrix multiplication efficiency compensates for modestly-sized tensors.
+\textbf{Permute-Flatten} groups indices to form a $(100 \times 10)$ matrix (the permuted and flattened $A$) and a $(10 \times 10)$ matrix ($B$), reducing the operation to GEMM. The reshaping step introduces overhead, but the subsequent matrix multiplication efficiency compensates for modestly-sized tensors.
+\textbf{BLAS} For higher-rank operations like 3D contractions, BLAS leverages the Permute-Flatten transformation internally, then dispatches the resulting $(100 \times 10) \times (10 \times 10)$ matrix multiplication to its optimized GEMM kernel. The performance advantage comes from BLAS's cache-aware blocking and assembly kernels that increase CPU utilization.
 
-	\item [BLAS] For higher-rank operations like 3D contractions, BLAS leverages the Permute-Flatten transformation internally, then dispatches the resulting $(100 \times 10) \times (10 \times 10)$ matrix multiplication to its optimized GEMM kernel. The performance advantage comes from BLAS's cache-aware blocking and assembly kernels that increase CPU utilization.
-\end{description}
 
 \begin{figure}[h]
 	\centering
@@ -546,19 +521,13 @@ Beyond 2D matrix multiplication, we also benchmarked higher-rank tensor operatio
 \end{figure}
 
 
-\textbf{Observations across dimensionality:}
+\textbf{Observations across dimensionality} reveal important insights:
 
-The transition from 2D to higher dimensions reveals important insights:
+\textbf{The BLAS implementation} maintains its performance advantage across all dimensionalities because most higher-rank operations can be decomposed into matrix multiplication via the Permute-Flatten strategy.
+\textbf{CodeGen scales well}, the Just-in-time specialization shows consistent performance across dimensions. The compiler's ability to optimize custom loop structures is dimension-agnostic.
+\textbf{Odometer penalty grows} as the overhead of coordinate calculations becomes more pronounced with increasing rank. For rank-5 tensors, the per-iteration cost of computing 5-dimensional offsets accumulates sufficiently to render the approach impractical.
+\textbf{Permute-Flatten remains viable} as the strategy of reducing arbitrary $N$-dimensional contractions to matrix multiplication works consistently across all tested dimensionalities, confirming the theoretical foundation presented in Section~\ref{sec:permute_flatten}.
 
-\begin{description}
-	\item [BLAS advantage persists] The BLAS implementation maintains its performance advantage across all dimensionalities because most higher-rank operations can be decomposed into matrix multiplication via the Permute-Flatten strategy.
-
-	\item [CodeGen scales well] Just-in-time specialization shows consistent performance across dimensions. The compiler's ability to optimize custom loop structures is dimension-agnostic.
-
-	\item [Odometer penalty grows] The overhead of coordinate calculations becomes more pronounced with increasing rank. For rank-5 tensors, the per-iteration cost of computing 5-dimensional offsets accumulates sufficiently to render the approach impractical.
-
-	\item [Permute-Flatten remains viable] The strategy of reducing arbitrary $N$-dimensional contractions to matrix multiplication works consistently across all tested dimensionalities, confirming the theoretical foundation presented in Section~\ref{sec:permute_flatten}.
-\end{description}
 
 \chapter{Conclusions}
 
