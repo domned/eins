@@ -40,7 +40,7 @@
 \begin{document}
 \frontmatter
 \maketitle
-\dedication{Da grandi poteri,\\ derivano grandi responsabilità.}
+\dedication{Imagination is more important than knowledge\\ Albert Einstein}
 \begin{abstract}
 	This work explores the different possible implementation of the Einstein sum, a mathematical notation used in many fields of science, such as physics and engineering, to represent the summation of products of tensors. The Einstein sum is a powerful tool for simplifying complex mathematical expressions and can be used to derive important results in various fields. In this work, we will discuss different ways to implement the Einstein sum, including its use in tensor calculus. We will also explore the advantages and disadvantages of each implementation.
 \end{abstract}
@@ -559,6 +559,33 @@ The transition from 2D to higher dimensions reveals important insights:
 
 	\item [Permute-Flatten remains viable] The strategy of reducing arbitrary $N$-dimensional contractions to matrix multiplication works consistently across all tested dimensionalities, confirming the theoretical foundation presented in Section~\ref{sec:permute_flatten}.
 \end{description}
+
+\chapter{Conclusions}
+
+\section{Summary}
+
+In this work, we have presented a comprehensive comparison of different implementations for the Einstein summation convention. Our experimental results demonstrate the trade-offs between generality, expressiveness, and performance across various approaches to tensor operations.
+
+The \textbf{Odometer} approach serves as a general-purpose interpreter that dynamically evaluates Einstein notation at runtime. While this methodology guarantees correctness and flexibility across arbitrary tensor shapes and contraction patterns, it comes at a significant performance cost. The per-iteration overhead of computing multi-dimensional offsets grows substantially with tensor rank, rendering this approach impractical for high-dimensional operations. Nevertheless, it remains important in this work as a reference implementation for validating the other optimizations.
+
+The \textbf{Just-In-Time code generation}  by treating Einstein notation as a domain-specific language and generating custom C code for specific tensor shapes, this methods performances benefit from the compiler's optimization capabilities. The primary limitation of this approach is the requirement for a beforehand compilation step, which may introduce latency in scenarios where tensor shapes are determined dynamically.
+
+The \textbf{Permute-Flatten} strategy leverages the notion that arbitrary N-dimensional tensor contractions can be reduced to a canonical 2D matrix multiplication through tensor unfolding. Although it incurs overhead from data reorganization and permutation operations, for modestly-sized tensors, this overhead is amortized by the efficiency of the subsequent matrix multiplication.
+
+The \textbf{BLAS} The advantage of BLAS grows with problem size due to cache-aware blocking and assembly-level kernel optimizations. However, BLAS performs best on problems that map naturally to its operation set (GEMM, GEMV, GER, DOT). For non-standard contraction patterns, BLAS must fall back to the Permute-Flatten strategy.
+
+From our experimental results we can say that the advantage of specialized approaches over general-purpose interpretation grows with both tensor dimensionality and problem size. For 2D matrix multiplication, all implementations cluster relatively closely in performance, but as dimensionality increases, the overhead of runtime coordinate calculation becomes dominant in the Odometer approach. Similarly, as tensor dimensions scale upward, the fixed overhead of code generation and permutation operations becomes negligible compared to their impact on larger computational kernels.
+
+
+\section{Future works}
+
+This research presents different possible improvements. Extension to GPU acceleration represents perhaps the most immediate opportunity, as tensor operations are fundamentally parallelizable and GPUs excel at regular memory access patterns.
+
+Integration of advanced BLAS backends such as Tensor Processing Units and specialized hardware accelerators could yield further performance improvements.
+
+Finally, investigation into how machine learning frameworks might integrate these insights into their runtime systems could yield significant practical benefits. Automatic dispatch between implementations, intelligent memory layout selection, and adaptive compilation strategies all represent possible directions for future works.
+
+
 
 
 \bibliographystyle{plain}
