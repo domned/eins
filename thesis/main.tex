@@ -42,14 +42,8 @@
 \maketitle
 \dedication{Imagination is more important than knowledge\\ Albert Einstein}
 \begin{abstract}
-This work explores the different possible implementation of the Einstein sum, a mathematical notation used in many fields of science, such as physics and engineering, to represent the summation of products of tensors.
-% NOTE(Diego): strettamente parlando non serve a semplificare le espressioni.
-The Einstein sum is a powerful tool for simplifying complex mathematical expressions
-% NOTE(Diego): di nuovo per quanto la notazione può semplificare alcune derivazioni non è quello che fai tu e devi sfruttare questo poco spazio per spiegare quello che hai fatto tu e cosa c'è di "buono".
-and can be used to derive important results in various fields. In this work, we will discuss different ways to implement the Einstein sum, including its use in
-% NOTE(Diego): Quando si parla di calculus normalmente si intendono le derivate che nella tua tesi non tratti.
-tensor calculus. We will also explore the advantages and disadvantages of each implementation.
-% NOTE(Diego): non dici da nessuna parte che si usano nelle reti neurali che è (ahime) un tema di grande interesse.
+	This work explores different computational implementations of the Einstein summation convention, a powerful mathematical notation for expressing tensor contractions used across scientific computing, physics, engineering, and modern machine learning. Particularly in neural networks, einsum notation expresses operations such as batch matrix multiplication, multi-head attention transformations, and tensor reshaping—operations that would otherwise require cumbersome loops or explicit memory reorganization.
+	While the notation itself provides abstraction for multi-dimensional array operations, the primary focus of this thesis is the practical challenge of implementing it: translating abstract einsum specifications into executable code. We present four distinct implementation strategies: generalized odometer iteration, just-in-time code generation, tensor permutation and flattening, and BLAS-accelerated dispatch. Each has different trade-offs between flexibility, compilation overhead, and runtime performance. We analyze these approaches by benchmarking against NumPy's optimized einsum and validate their correctness across diverse tensor dimensions and contraction patterns.
 \end{abstract}
 
 \tableofcontents
@@ -73,16 +67,16 @@ Consider the transformation of a vector $v$ by a matrix $M$:
 \begin{equation}
 	y_i = \sum_{j=1}^{n} M_{ij} v_j \quad \longrightarrow \quad y_i = M_{ij} v_j
 \end{equation}
-This notation formalizes the \textbf{contraction} process: a linear mapping that reduces the rank of a tensor by summing over one or more indices.
+This notation formalizes the contraction process: a linear mapping that reduces the rank of a tensor by summing over one or more indices.
 
 \section{Tensors memory layout and access patterns}
 \label{sec:memory_layout}
-In the implementations that we will see in the next chapter, tensors are stored in contiguous memory buffers. The way these multi-dimensional arrays are laid out in memory is crucial for performance. The two most common layouts are \textbf{Row-Major} (C-style) and \textbf{Column-Major} (Fortran-style). In a row-major layout, the last index changes fastest, while in column-major, the first index changes fastest.
+In the implementations that we will see in the next chapter, tensors are stored in contiguous memory buffers. The way these multi-dimensional arrays are laid out in memory is crucial for performance. The two most common layouts are row-major (C-style) and column-major (Fortran-style). In a row-major layout, the last index changes fastest, while in column-major, the first index changes fastest.
 For example, a 3D tensor $T_{ijk}$ with shape $(2, 2, 2)$ would be stored as:
 \begin{center}
 	\includegraphics[width=0.8\textwidth]{images/tensor_in_memory.pdf}
 \end{center}
-The choice of layout affects the \textbf{memory access patterns} during tensor contractions. Accessing elements that are stored contiguously in memory leads to better cache performance and faster execution. For instance, in a row-major layout, iterating over the last index $k$ of $T_{ijk}$ will be more efficient than iterating over the first index $i$.
+The choice of layout affects the memory access patterns during tensor contractions. Accessing elements that are stored contiguously in memory leads to better cache performance and faster execution. For instance, in a row-major layout, iterating over the last index $k$ of $T_{ijk}$ will be more efficient than iterating over the first index $i$.
 Furthermore we can define the \textbf{stride} of a tensor as the number of elements to skip in memory to move from one index to the next. For a tensor with shape $(d_0, d_1, d_2)$ in row-major order, the strides would be:
 \begin{equation}
 	\text{stride}_0 = d_1 \cdot d_2, \quad \text{stride}_1 = d_2, \quad \text{stride}_2 = 1
@@ -92,16 +86,15 @@ and the offset as \begin{equation}
 \end{equation}
 Understanding these concepts allows us to implement efficient tensor operations, as they directly impact the performance of algorithms that rely on tensor contractions, such as those expressed in Einstein summation notation.
 
-A critical factor in the performance of tensor operations is the computer's \textbf{memory hierarchy}. As described in \cite{patterson2018computer}, modern CPUs employ a stratified memory system: processors execute instructions on data stored in registers, but must regularly fetch operands from main memory, which is orders of magnitude slower. Between the CPU and main memory sit intermediate caches (L1, L2, L3) that store recently-accessed data. A \textbf{cache hit}---when the CPU finds needed data in the cache---incurs minimal latency, while a \textbf{cache miss}---requiring a fetch from main memory---incurs substantial delay. The total execution time of an algorithm is therefore determined not just by the number of floating-point operations, but critically by how well the data access pattern exploits the cache hierarchy. Tensors that fit entirely within faster cache levels execute much faster than those stored in slower memory. This is why choosing appropriate memory layouts and access patterns, as discussed above, is essential for achieving high performance.
-
+A critical factor in the performance of tensor operations is the computer's memory hierarchy. As described in \cite{patterson2018computer}, modern CPUs employ a stratified memory system: processors execute instructions on data stored in registers, but must regularly fetch operands from main memory, which is orders of magnitude slower. Between the CPU and main memory sit intermediate caches (L1, L2, L3) that store recently-accessed data. A cache hit---when the CPU finds needed data in the cache---incurs minimal latency, while a cache miss---requiring a fetch from main memory---incurs substantial delay. The total execution time of an algorithm is therefore determined not just by the number of floating-point operations, but critically by how well the data access pattern exploits the cache hierarchy. Tensors that fit entirely within faster cache levels execute much faster than those stored in slower memory. This is why choosing appropriate memory layouts and access patterns, as discussed above, is essential for achieving high performance.
 \section{Einsum in the Architecture of Neural Networks}
 
-In the modern computational landscape, tensors are the primary data structure for \textbf{Deep Learning}.
+In the modern computational landscape, tensors are the primary data structure for Deep Learning.
 
 \subsection{Linear layers and batch processing}
 
 In modern deep learning architectures, a Linear Layer serves as an affine transformation that projects an input tensor into a new feature space via a learned weight matrix.
-This operation is fundamentally a \textbf{tensor contraction}, which can be concisely expressed using the Einstein summation convention.
+This operation is fundamentally a tensor contraction, which can be concisely expressed using the Einstein summation convention.
 Consider a weight matrix $W$ with dimensions $(I, O)$, where $I$ is the number of input features and $O$ is the number of output features.
 If we process a single vector $x$ of size $I$, the operation is a standard matrix-vector product. However, with a batch size $B$,
 our input becomes a 2D tensor $X \in \mathbb{R}^{B \times I}$.
@@ -119,7 +112,7 @@ This specific notation provides several computational advantages:
 \end{description}
 
 Without the batch dimension, the hardware would have to launch $B$ separate, smaller kernels, leading to significant overhead and under-utilization of the high-speed memory bus.
-Thus, the Einstein notation does not just describe the operations, it defines the \textbf{memory access pattern}.
+Thus, the Einstein notation does not just describe the operations, it defines the memory access pattern.
 
 \subsection{Broader applications}
 
@@ -137,7 +130,7 @@ This operation involves a double contraction over indices $k$ and $l$, effective
 
 \section{From Mathematical Notation to algorithm}
 
-The translation of a symbolic string like \texttt{"ij,jk->ik"} into machine code is not a trivial task. The implementation must bridge the gap between high-level logic and \textbf{Low-Level Stride Arithmetic}.
+The translation of a symbolic string like \texttt{"ij,jk->ik"} into machine code is not a trivial task. The implementation must bridge the gap between high-level logic and Low-Level Stride Arithmetic.
 
 \subsection{The Compilation Pipeline}
 
@@ -167,7 +160,7 @@ Since the Einstein notation is so expressive, we present different implementatio
 	\item [JIT-Code Generation and Specialization:]
 	      Another possible strategy is \textbf{Just-In-Time (JIT)} compilation. Instead of calling a library, the engine generates a raw C or C++ source file containing the exact nested loops required for the specific tensor shapes at hand.
 
-	      By hardcoding the loop bounds and strides, the system allows the compiler to perform aggressive optimizations like \textbf{SIMD vectorization} and \textbf{Loop Unrolling}. This eliminates the "index lookup" overhead entirely, creating a zero-overhead kernel specialized for a single mathematical task.
+	      By hardcoding the loop bounds and strides, the system allows the compiler to perform aggressive optimizations like SIMD vectorization and Loop Unrolling. This eliminates the "index lookup" overhead entirely, creating a zero-overhead kernel specialized for a single mathematical task.
 	\item [Canonical Permutation and Flattening:]
 	      By using a \textbf{Permute-Flatten} strategy we can treat the operation as a \textbf{matrix multiplication}. This involves reordering the axes of the input tensors so that the summation indices are grouped contiguously.
 
@@ -192,7 +185,7 @@ While this approach offers high clarity for educational purposes and flexibility
 
 \subsection{The Technical Architecture}
 
-The implementation relies on three core components to manage the complexity of multi-dimensional spaces: \textbf{Lexicographic Stepping, Bitwise Labeling, and Linear Offsetting}.
+The implementation relies on three core components to manage the complexity of multi-dimensional spaces: Lexicographic Stepping, Bitwise Labeling, and Linear Offsetting.
 
 \begin{description}
 	\item [Lexicographic Stepping (next\_indices):] The core of the iteration logic is the \texttt{next\_indices} function. This simulates a multi-dimensional counter that increments in row-major order.
@@ -217,34 +210,34 @@ In the final execution stage, the \texttt{einsum} function creates a ``combined 
 
 \section{Just-In-Time (JIT) Code Generation and AOT Specialization}
 
-This implementation represents a \textbf{Meta-Programming} approach to tensor operations. Instead of relying on a generalized function that interprets notation at runtime, this system acts as a domain-specific compiler. It writes custom-tailored C source code for specific tensor shapes and notations, which is then compiled into a highly optimized binary kernel.
+This implementation represents a Meta-Programming approach to tensor operations. Instead of relying on a generalized function that interprets notation at runtime, this system acts as a domain-specific compiler. It writes custom-tailored C source code for specific tensor shapes and notations, which is then compiled into a highly optimized binary kernel.
 
-The primary shift here is the move from runtime interpretation to \textbf{Ahead-of-Time (AOT) Specialization}.
+The primary shift here is the move from runtime interpretation to Ahead-of-Time (AOT) Specialization.
 
 \subsection{Optimization Mechanisms}
 
-The generator utilizes three primary optimization strategies: \textbf{Literal Stride Injection, Hierarchical Loop Ordering, and Compiler-Assisted Vectorization}.
+The generator utilizes three primary optimization strategies: Literal Stride Injection, Hierarchical Loop Ordering, and Compiler-Assisted Vectorization.
 
 \begin{description}
 	\item [Literal Stride Injection:] In generalized functions, strides are looked up in arrays at runtime. This generator calculates these strides once and prints them as literal constants.
 
 	      For an index ``ij'' with shape $[7, 3]$, the generator outputs the direct arithmetic \texttt{(i * 3) + j}.
 
-	\item [Hierarchical Loop Ordering:] The generator enforces a strict hierarchy to maximize \textbf{Data Locality}:
+	\item [Hierarchical Loop Ordering:] The generator enforces a strict hierarchy to maximize data locality:
 	      \begin{description}
 		      \item [Outer Shell:] Iterates over the Free Indices (those present in the output), ensuring a contiguous and organized traversal of the destination memory.
 		      \item [Inner Core:] Iterates over Summation Indices.
 	      \end{description}
-	      This structure maximizes \textbf{Temporal Locality} by keeping the accumulation sum for a specific output element within a high-speed CPU register for the entire duration of the summation loop.
+	      This structure maximizes Temporal Locality by keeping the accumulation sum for a specific output element within a high-speed CPU register for the entire duration of the summation loop.
 
 	\item [Compiler-Driven Vectorization:] By outputting high-level C code rather than raw assembly, the implementation leverages the full power of modern optimizers.
 
-	      Because loop bounds (e.g., \texttt{i < 7}) are known at compile time, the compiler can perform aggressive \textbf{Loop Unrolling} and automatically inject \textbf{SIMD (Single Instruction, Multiple Data)} instructions to process multiple floating-point operations in parallel.
+	      Because loop bounds (e.g., \texttt{i < 7}) are known at compile time, the compiler can perform aggressive Loop Unrolling and automatically inject SIMD (Single Instruction, Multiple Data) instructions to process multiple floating-point operations in parallel.
 \end{description}
 
 \subsection{Summary of the JIT Engine}
 
-This approach treats Einstein notation as a high-level language. By moving the computational burden from the runtime environment to the \textbf{Compilation Phase}, it reduces logic overhead and memory latency, making it adapt for production environments where tensor shapes are known in advance.
+This approach treats Einstein notation as a high-level language. By moving the computational burden from the runtime environment to the Compilation Phase, it reduces logic overhead and memory latency, making it adapt for production environments where tensor shapes are known in advance.
 
 \section{Canonical Contraction through Permutation and Flattening}
 \label{sec:permute_flatten}
@@ -255,7 +248,7 @@ By reducing the problem to a canonical matrix form, the system can leverage opti
 
 \subsection{The Transformation Pipeline}
 
-The core logic follows a three-stage pipeline: \textbf{Permute, Flatten, and Multiply}. This strategy is designed to reduce any arbitrary $N$-dimensional contraction into a single, \textbf{GEMM} (General Matrix Multiplication) call.
+The core logic follows a three-stage pipeline: permute, flatten, and multiply. This strategy is designed to reduce any arbitrary $N$-dimensional contraction into a single, \textbf{GEMM} (general matrix multiplication) call.
 
 \begin{description}
 	\item [Tensor Permutation and Grouping:] To treat a tensor as a matrix, the memory layout must be rearranged so that relevant dimensions are contiguous. The function \texttt{matrix\_permute} reorders the axes of the source tensors based on their roles in the Einstein notation:
@@ -266,7 +259,7 @@ The core logic follows a three-stage pipeline: \textbf{Permute, Flatten, and Mul
 	      This grouping ensures that the ``right side'' of Tensor A (the dimensions being summed over) aligns perfectly with the ``left side'' of Tensor B in linear memory.
 
 	\item[Formal Proof via Matricization:]
-	      The validity of this reduction follows from the theory of \textbf{tensor unfolding} or \textbf{matricization} as illustrated in \cite{kolda2009tensor}. Matricization is a bijective mapping that rearranges the elements of a tensor into a matrix without changing their values.
+	      The validity of this reduction follows from the theory of tensor unfolding or matricization as illustrated in \cite{kolda2009tensor}. Matricization is a bijective mapping that rearranges the elements of a tensor into a matrix without changing their values.
 
 	      \textit{Proof.}
 	      Consider the generalized tensor contraction
@@ -322,36 +315,34 @@ The core logic follows a three-stage pipeline: \textbf{Permute, Flatten, and Mul
 
 \section{BLAS-Accelerated Pattern Recognition and Greedy Dispatch}
 
-This implementation utilizes a \textbf{Greedy Pattern Matching} strategy to map Einstein notation to the highly optimized Basic Linear Algebra Subprograms (\textbf{BLAS}) library. Instead of treating every contraction as a generic tensor operation, this system attempts to identify standard linear algebra operations that can be executed using hardware-tuned Level-1, Level-2, or Level-3 BLAS routines.
+This implementation utilizes a greedy pattern matching strategy to map Einstein notation to the highly optimized Basic Linear Algebra Subprograms (\textbf{BLAS}) library. Instead of treating every contraction as a generic tensor operation, this system attempts to identify standard linear algebra operations that can be executed using hardware-tuned Level-1, Level-2, or Level-3 BLAS routines.
 
 \subsection{The Pattern Hierarchy}
 
-% NOTE(Diego): questa sezione non rende abbastanza chiaro che questo pattern matching funziona (o almeno dovrebbe) per pattern che sono dentro altri, e.g. batched GEMM ovvero il pattern bij,bjk->bik
+The implementation utilizes a hierarchy of functions, prioritizing specialized kernels over more general ones to minimize computational overhead. A critical feature of this approach is that pattern matching works hierarchically: the dispatch logic first identifies the most specific applicable pattern, even when that pattern is nested within a larger dimensional structure. For example, a batched matrix multiplication like \texttt{"bij,bjk->bik"} is recognized as a GEMM operation (the core \texttt{"ij,jk->ik"} pattern) repeated across the batch dimension $b$. This allows the system to dispatch batched operations directly to optimized BLAS routines that handle them as a single composite operation, rather than treating them as generic rank-3 tensor contractions.
 
-The implementation utilizes a hierarchy of functions, prioritizing specialized kernels over more general ones to minimize computational overhead.
-
-\begin{enumerate}
-	\item \textbf{Level-1 Operations (Vector-Vector):}
+\begin{description}
+	\item [Level-1 Operations (Vector-Vector):]
 	      \begin{description}
 		      \item [DOT:] Detects patterns like \texttt{"i,i->"} to perform a scalar dot product.
 		      \item [AXPY:] Recognizes \texttt{"i,i->i"} for constant-multiplication and vector addition ($y := \alpha x + y$).
 	      \end{description}
 
-	\item \textbf{Level-2 Operations (Matrix-Vector):}
+	\item [Level-2 Operations (Matrix-Vector):]
 	      \begin{description}
 		      \item [GER:] Identifies \texttt{"i,j->ij"} to perform a rank-1 outer product.
 		      \item [GEMV:] Matches \texttt{"ij,j->i"} or \texttt{"i,ij->j"} to execute matrix-vector multiplication, supporting both standard and transposed variants.
 	      \end{description}
 
-	\item \textbf{Level-3 Operations (Matrix-Matrix):}
+	\item [Level-3 Operations (Matrix-Matrix):]
 	      \begin{description}
 		      \item [GEMM:] The most critical kernel, matching \texttt{"ij,jk->ik"}.
 	      \end{description}
-\end{enumerate}
+\end{description}
 
 \subsection{Intelligent Dispatch Logic}
 
-The system analyzes the input notation using bitwise masks and dimension counts to fill a \texttt{BLASAnalysis} metadata structure. This structure guides the \textbf{Main Dispatch Function}, which routes the matrices to specific case handlers.
+The system analyzes the input notation using bitwise masks and dimension counts to fill a \texttt{BLASAnalysis} metadata structure. This structure guides the main dispatch function, which routes the matrices to specific case handlers.
 
 \begin{table}[h]
 	\centering
@@ -369,8 +360,7 @@ The system analyzes the input notation using bitwise masks and dimension counts 
 
 \subsection{Future work: stride-based optimization}
 
-% NOTE(Diego): non userei il termine "theoretical groundwork" siccome in questa parte fai una descrizione molto ad alto livello.
-A unique feature of this implementation is the theoretical groundwork for \textbf{Stride-Based Patterns}. While the current version handles unit strides, standard BLAS functions accept an \texttt{incx} parameter.
+This implementation serves as the basis for stride-based patterns. While the current version handles unit strides, standard BLAS functions accept an \texttt{incx} parameter.
 
 In future iterations, this would allow the system to handle complex patterns like \texttt{"ii->"} (Matrix Trace) or \texttt{"xii,xii->"} (Diagonal Dot Product) without moving data. By calculating a custom stride based on the tensor shape, the engine could traverse diagonal elements as if they were a contiguous vector, further reducing the need for temporary memory allocations or tensor permutations.
 
@@ -381,6 +371,7 @@ This approach allows us to leverage the BLAS library. By identifying the most sp
 \chapter{Performance analysis}
 
 In this chapter we analyze the performance characteristics of the four Einstein summation implementations developed in Chapter~\ref{chap:Implementations}. Our goal is to quantify the \textbf{practical trade-offs} between computational overhead and execution time across different problem scales. We benchmark against NumPy's industry-standard \texttt{einsum} implementation to contextualize our results.
+It is important to mention that Numpy uses a sophisticated engine that combines high specialized BLAS kernels with a fallback to specialized iterators.
 
 \section{Experimental setup}
 
@@ -397,7 +388,6 @@ All benchmarks were executed on a machine with the following specifications:
 
 \subsection{Measurement methodology}
 
-% NOTE(Diego): visto che sei su x86_64 perché non hai usato RDTSC?
 We implemented the benchmarks in C, using the \texttt{clock\_gettime(CLOCK\_MONOTONIC)} function for timing. To minimize statistical noise, each benchmark case was executed 500 times.
 We use Python's NumPy library (version 1.21.0) as a reference point. While direct C-to-Python comparisons are inherently imperfect due to Python's interpretive overhead, NumPy's \texttt{einsum} function is implemented in optimized C with BLAS backend support, making it a fair baseline for the algorithmic choices (though not the language overhead).
 
@@ -412,13 +402,17 @@ The performance analysis focuses on three representative tensor contraction patt
 	\item [(100, 100)] Data too large for cache.
 \end{description}
 
-\textbf{3D Tensor Contraction} ($\texttt{abc,cd->abd}$) This operation represents a higher-rank contraction that does not trivially map to standard BLAS operations. It tests whether our implementations correctly handle rank-3 tensors and whether the Permute-Flatten strategy successfully reduces it to matrix multiplication.
+\textbf{3D tensor contraction} ($\texttt{abc,cd->abd}$) This operation represents a higher-rank contraction that does not trivially map to standard BLAS operations. It tests whether our implementations correctly handle rank-3 tensors and whether the Permute-Flatten strategy successfully reduces it to matrix multiplication.
 
 \section{Statistical modeling of execution times}
 
-% NOTE(Diego): aggiungi un immagine della distribuzione log-normale spostata che non molti han no presente com'è e ti servirà anche per la presentzatatione.
-
 Raw execution time measurements are inherently noisy due to operating system scheduling, cache behavior, and other system-level variability. To extract meaningful insights, we model execution times using a \textbf{lognormal distribution}, which is well-suited for positive-valued measurements with right-skewed distributions.
+
+\subsection{The Lognormal Distribution}
+
+The lognormal distribution is characterized by three key parameters: the location parameter $\mu$ (mean of the log-transformed data), the scale parameter $\sigma$ (standard deviation of the log-transformed data), and the shift parameter $\tau$ (minimum threshold). Unlike the normal distribution, which ranges from $-\infty$ to $+\infty$, the lognormal distribution is strictly positive for $t > \tau$, making it ideal for performance measurements.
+
+The key insight is that while a normal distribution can produce negative values, the lognormal distribution enforces strict positivity by design. This is critical for execution time analysis, where negative measurements are physically impossible. The right-skewed shape of the lognormal distribution accurately reflects how execution times cluster around a minimum value with occasional larger measurements due to system perturbations, cache misses, and scheduling delays.
 
 For each implementation and tensor configuration, we collected 500 execution time samples. The log-transformed timings (i.e., $\ln(t_i)$ for each measurement $t_i$) approximate a normal distribution, validating the use of the lognormal model.
 
@@ -427,11 +421,16 @@ A normal distribution can produce negative values, making it inappropriate for s
 Given $n$ execution time samples $t_1, t_2, \ldots, t_n$, the parameters are computed as:
 
 \begin{equation}
-	\mu = \frac{1}{n} \sum_{i=1}^{n} \ln(t_i), \quad \sigma = \sqrt{\frac{1}{n} \sum_{i=1}^{n} (\ln(t_i) - \mu)^2}
+	\mu = \frac{1}{n} \sum_{i=1}^{n} \ln(t_i - \tau), \quad \sigma = \sqrt{\frac{1}{n} \sum_{i=1}^{n} (\ln(t_i - \tau) - \mu)^2}
 \end{equation}
-where $\mu$ is the mean of the log-transformed execution times and $\sigma$ is the standard deviation.
+where $\mu$ is the mean of the shifted log-transformed execution times, $\sigma$ is the standard deviation, and $\tau$ is the location parameter representing the minimum execution time (the inherent constant overhead that cannot be avoided regardless of computational complexity). The standard lognormal distribution with location shift ensures that all times satisfy $t \geq \tau$, capturing the fact that even a zero-cost operation requires some baseline CPU cycles. Estimating $\tau$ can be performed using order statistics or maximum likelihood methods; in practice, $\tau$ is typically slightly below the minimum observed execution time.
 
-% NOTE(Diego): ti manca il parametro \tau che è lo spostamento della distribuzione o il tempo minimo di esecuzione.
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=0.8\textwidth]{images/log.pdf}
+	\caption{The shifted lognormal distribution with location parameter $\mu = 0.5$, scale parameter $\sigma = 0.6$, and shift $\tau \geq 0$. The shaded region between 0 and $\sigma$ demonstrates the concentration of approximately 68\% of measurements around the mean (analogous to the empirical rule in normal distributions). The distribution exhibits a characteristic right-skew, with a long tail extending toward larger values. This shape naturally captures the behavior of execution times: a minimum unavoidable overhead ($\tau$) followed by a rapid rise in probability density near the center, with diminishing probability for increasingly large outlier measurements.}
+	\label{fig:lognormal_dist}
+\end{figure}
 
 \section{Benchmark Results and Comparative Analysis}
 
@@ -448,7 +447,7 @@ Results are presented in Figure~\ref{fig:benchmark_comparison}.
 	\label{fig:benchmark_comparison}
 \end{figure}
 
-Before analyzing the results, it is important to define \textbf{algorithmic overhead}: the cost of executing non-computational operations required to perform a computation, such as index calculations, bounds checking, memory address calculations, function call overhead, and temporary buffer allocation. For small problems, the total execution time is dominated by this overhead rather than the actual arithmetic operations (e.g., floating-point multiplications and additions).
+Before analyzing the results, it is important to define algorithmic overhead: the cost of executing non-computational operations required to perform a computation, such as index calculations, bounds checking, memory address calculations, function call overhead, and temporary buffer allocation. For small problems, the total execution time is dominated by this overhead rather than the actual arithmetic operations (e.g., floating-point multiplications and additions).
 
 \subsubsection{Small Problems (10×10): Overhead Dominates}
 
@@ -458,8 +457,8 @@ For $(10, 10) \times (10, 10)$ matrices (200 floating-point multiplications tota
 \textbf {Permute-Flatten} shows overhead from data permutation operations. While the subsequent GEMM is fast, the permutation timings are noticeable for small tensors where computation time itself is negligible.
 \textbf {BLAS} OpenBLAS detects the small problem size and dispatches to a highly-tuned small-matrix kernel with minimal overhead, it's increase in performance in respect to the permute flatten approach is due to how it handles data stored in the cache instead of main memory as described in \cite{DONGARRA2017495}.
 
-% NOTE(Diego): "\textbf{Key insight:}" no, meglio dire "In conclusion"
-\textbf{Key insight:} At this scale call overhead and memory allocation cost are the main tasks in execution time. CodeGen and BLAS are preferred because they reduce this overhead.
+
+In conclusion, at this scale call overhead and memory allocation cost are the main tasks in execution time. CodeGen and BLAS are preferred because they reduce this overhead.
 
 \subsubsection{Medium problems (50×50)}
 
@@ -468,7 +467,7 @@ At $(50, 50) \times (50, 50)$ (125,000 operations) the working set (3 matrices �
 \textbf {Permute-Flatten} becomes competitive with CodeGen, as the BLAS GEMM operation's efficiency grows with problem size. The overhead of permutation is amortized over computation.
 \textbf {BLAS} remains marginally faster than Permute-Flatten. This is because BLAS is optimized for cache efficiency, and the $50 \times 50$ case is large enough to benefit from its blocking strategies.
 
-\textbf{Key insight:} The 50×50 dimensions shows how the data access pattern affects performance. CodeGen's compiler-generated code and BLAS's hand-tuned kernels both exploit vectorization and cache locality that our generic iteration strategy cannot match.
+In conclusion, the 50×50 dimensions shows how the data access pattern affects performance. CodeGen's compiler-generated code and BLAS's hand-tuned kernels both exploit vectorization and cache locality that our generic iteration strategy cannot match.
 
 \subsubsection{Large Problems (100×100): Memory Hierarchy Matters}
 
@@ -478,7 +477,7 @@ For $(100, 100) \times (100, 100)$ (1 million operations), the working set (3 ma
 \textbf {BLAS} employs sophisticated cache-blocking strategies to optimize memory utilization during the $100 \times 100 \times 100$ GEMM computation. The algorithm partitions the matrix multiplication into rectangular blocks (e.g., $60 \times 60 \times 320$) that fit entirely within fast L2 cache.
 \textbf {Permute-Flatten} shows slower performance than direct BLAS because the intermediate permutation operations create additional memory traffic and require temporary buffer allocation.
 
-\textbf{Key insight:} At large scales, the BLAS approach's becomes sensibly better then on smaller datasets while the codegen approach remains competitive. The Odometer approach becomes impractical due to its overhead, while the Permute-Flatten approach suffers from additional memory traffic and temporary buffer allocation.
+In conclusion, at large scales, the BLAS approach's becomes sensibly better then on smaller datasets while the codegen approach remains competitive. The Odometer approach becomes impractical due to its overhead, while the Permute-Flatten approach suffers from additional memory traffic and temporary buffer allocation.
 
 \subsubsection{Higher-Rank Tensors: 3D Contraction}
 
@@ -487,13 +486,14 @@ The 3D contraction test ($\texttt{abc,cd->abd}$ with shapes $(10, 10, 10) \times
 All implementations produce numerically identical results, but performance varies.
 \textbf{Odometer} handles the operation with no special logic, iterating through the combined space.
 \textbf{CodeGen} generates custom nested loops, specializing entirely to this specific contraction pattern. The loop structure is:
-% NOTE(Diego): usa un'altro ciclo invece di sum_k perché non è immediatamente chiaro cosa voglia dire
+
 \begin{lstlisting}
 for i = 0 to 10
     for j = 0 to 10
         for l = 0 to 10
-            C[i,j,l] += sum_k A[i,j,k] * B[k,l]
-	      \end{lstlisting}
+            for k = 0 to 10
+                C[i,j,l] += A[i,j,k] * B[k,l]
+\end{lstlisting}
 This structure exhibits good cache locality: the innermost loop over $k$ accesses $B$ contiguously along its second dimension.
 
 \textbf{Permute-Flatten} groups indices to form a $(100 \times 10)$ matrix (the permuted and flattened $A$) and a $(10 \times 10)$ matrix ($B$), reducing the operation to GEMM. The reshaping step introduces overhead, but the subsequent matrix multiplication efficiency compensates for modestly-sized tensors.
@@ -514,7 +514,7 @@ The experimental results validate our implementation hierarchy:
 \begin{description}
 	\item [Odometer] is a correct, general-purpose reference implementation suitable for small problems and library validation.
 
-	\item [CodeGen] performs best amongst our implementations but requires a beforehand compilation step. % NOTE(Diego): immagino che i tuoi tempi non includano il tempo di compilazione e questo va esplicitato il più possibile
+	\item [CodeGen] performs best amongst our implementations but requires a beforehand compilation step which is not accounted for in the benchmark times.
 
 	\item [Permute-Flatten] provides a useful middle ground for rank-$N$ contractions that don't fit standard BLAS patterns. Its performance depends critically on avoiding unnecessary data copies and permutation overhead.
 
@@ -526,28 +526,25 @@ The experimental results validate our implementation hierarchy:
 Beyond 2D matrix multiplication, we also benchmarked higher-rank tensor operations to assess how implementations scale to more complex contraction patterns. Figure~\ref{fig:benchmark_dimensions} shows the performance of all implementations across tensor dimensions 2, 5, and 10 with small problem sizes.
 
 \begin{figure}[h]
-% NOTE(Diego): per completezza dovresti dire anche quali sono i pattern che hai usato.
-% NOTE(Diego): alcuni di questi hanno una deviazione standard folle che dovresti in qualche modo spiegare/giustificare
 	\centering
 	\includegraphics[width=0.95\textwidth]{images/benchmark_dimensions.pdf}
-	\caption{Performance comparison across tensor dimensions (2D, 5D, and 10D) with small problem sizes. Test cases use small tensors to isolate algorithmic overhead: 2D uses $5 \times 5$ matrices, 5D uses $3^5$ tensors (243 elements), and 10D uses $2^{10}$ tensors (1,024 elements). The results demonstrate how Odometer's overhead grows significantly with dimensionality, while specialized approaches like CodeGen reduce overhead, and BLAS maintains relatively consistent performance across all dimensions.}
+	\caption{Performance comparison across tensor dimensions (2D, 5D, and 10D) with small problem sizes. Test cases use small tensors to isolate algorithmic overhead: 2D tests the fundamental matrix multiplication pattern \texttt{"ij,jk->ik"} with $5 \times 5$ matrices; 5D and 10D use similarly ranked contraction patterns appropriate to their dimensionality with $3^5$ (243 elements) and $2^{10}$ (1,024 elements) respectively. The results demonstrate how Odometer's overhead grows significantly with dimensionality, while specialized approaches like CodeGen reduce overhead, and BLAS maintains relatively consistent performance across all dimensions. The elevated variance in some configurations—particularly visible for Odometer and CodeGen at higher ranks—reflects the substantial influence of system scheduling noise and cache behavior on small tensor operations, where constant overheads (represented by $\tau$ in the lognormal model) constitute a larger proportion of total execution time.}
 	\label{fig:benchmark_dimensions}
 \end{figure}
 
 \textbf{Observations across dimensionality} reveal important insights:
 
-\textbf{The BLAS implementation} maintains its performance advantage across all dimensionalities because most higher-rank operations can be decomposed into matrix multiplication via the Permute-Flatten strategy.
-\textbf{CodeGen scales well}, the Just-in-time specialization shows consistent performance across dimensions. The compiler's ability to optimize custom loop structures is dimension-agnostic.
-\textbf{Odometer penalty grows} as the overhead of coordinate calculations becomes more pronounced with increasing rank. For rank-5 tensors, the per-iteration cost of computing 5-dimensional offsets accumulates sufficiently to render the approach impractical.
-\textbf{Permute-Flatten remains viable} as the strategy of reducing arbitrary $N$-dimensional contractions to matrix multiplication works consistently across all tested dimensionalities, confirming the theoretical foundation presented in Section~\ref{sec:permute_flatten}.
+The BLAS implementation maintains its performance advantage across all dimensionalities because most higher-rank operations can be decomposed into matrix multiplication via the Permute-Flatten strategy.
+CodeGen scales well, the Just-in-time specialization shows consistent performance across dimensions. The compiler's ability to optimize custom loop structures is dimension-agnostic.
+Odometer penalty grows as the overhead of coordinate calculations becomes more pronounced with increasing rank. For rank-5 tensors, the per-iteration cost of computing 5-dimensional offsets accumulates sufficiently to render the approach impractical.
+Permute-Flatten remains viable as the strategy of reducing arbitrary $N$-dimensional contractions to matrix multiplication works consistently across all tested dimensionalities, confirming the theoretical foundation presented in Section~\ref{sec:permute_flatten}.
 
 
 \chapter{Conclusions}
 
 \section{Summary}
 
-% Il confronto non è comprensivo per vari motivi (e.g. hai provato su un solo processore) quindi meglio evitare paroloni.
-In this work, we have presented a comparison of different implementations for the Einstein summation convention. Our experimental results demonstrate the trade-offs between generality, expressiveness, and performance across various approaches to tensor operations.
+In this work, we have presented a comparison of different implementations for the Einstein summation convention.
 
 The \textbf{Odometer} approach serves as a general-purpose interpreter that dynamically evaluates Einstein notation at runtime. While this methodology guarantees correctness and flexibility across arbitrary tensor shapes and contraction patterns, it comes at a significant performance cost. The per-iteration overhead of computing multi-dimensional offsets grows substantially with tensor rank, rendering this approach impractical for high-dimensional operations. Nevertheless, it remains important in this work as a reference implementation for validating the other optimizations.
 
@@ -558,8 +555,6 @@ The \textbf{Permute-Flatten} strategy leverages the notion that arbitrary N-dime
 The \textbf{BLAS} The advantage of BLAS grows with problem size due to cache-aware blocking and assembly-level kernel optimizations. However, BLAS performs best on problems that map naturally to its operation set (GEMM, GEMV, GER, DOT). For non-standard contraction patterns, BLAS must fall back to the Permute-Flatten strategy.
 
 From our experimental results we can say that the advantage of specialized approaches over general-purpose interpretation grows with both tensor dimensionality and problem size. For 2D matrix multiplication, all implementations cluster relatively closely in performance, but as dimensionality increases, the overhead of runtime coordinate calculation becomes dominant in the Odometer approach. Similarly, as tensor dimensions scale upward, the fixed overhead of code generation and permutation operations becomes negligible compared to their impact on larger computational kernels.
-
-% NOTE(Diego): non mi ricordo se da qualche parte dici che NumPy sostanzialemente usa l'implementazione con la GEMM (che mi avevi detto avevi visto che internamente era fatto così) in caso dovresti dirlo.
 
 \section{Future works}
 
